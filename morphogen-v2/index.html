@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#0a0e14" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <title>Morphogen</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; height: 100%; background: #0a0e14; color: #e8eef7; }
+      #app { display: grid; grid-template-rows: auto 1fr auto; height: 100%; }
+      header {
+        display: flex; align-items: center; justify-content: space-between;
+        gap: 1rem; padding: 0.75rem 1rem; border-bottom: 1px solid #1c2636;
+      }
+      header h1 { font-size: 1rem; font-weight: 600; letter-spacing: 0.08em; margin: 0; }
+      header .tag { opacity: 0.65; font-size: 0.75rem; }
+      #stage {
+        position: relative; overflow: hidden; background: #05070b;
+        display: grid; place-items: center;
+      }
+      canvas#field {
+        width: min(100%, 960px); height: auto; aspect-ratio: 1;
+        max-height: calc(100vh - 9rem);
+        image-rendering: pixelated;
+        cursor: crosshair; touch-action: none;
+        border-radius: 4px;
+      }
+      #hud {
+        position: absolute; left: 1rem; bottom: 1rem;
+        font-size: 0.75rem; opacity: 0.8; pointer-events: none;
+      }
+      #panels {
+        display: flex; gap: 0.5rem; flex-wrap: wrap;
+        padding: 0.75rem 1rem; border-top: 1px solid #1c2636;
+      }
+      button, .chip {
+        appearance: none; border: 1px solid #2a3a52; background: #121a26;
+        color: inherit; border-radius: 999px; padding: 0.4rem 0.85rem;
+        font: inherit; font-size: 0.8rem; cursor: pointer;
+      }
+      button:hover { border-color: #4d6d9a; }
+      button.primary { background: #1a3354; border-color: #3d6aa1; }
+      #gate {
+        position: fixed; inset: 0; display: grid; place-items: center;
+        background: rgba(5, 7, 11, 0.92); z-index: 10;
+      }
+      #gate.hidden { display: none; }
+      #gate .card { text-align: center; max-width: 22rem; padding: 2rem 1.5rem; }
+      #gate .earth { letter-spacing: 0.2em; font-size: 0.7rem; opacity: 0.7; }
+      #gate h2 { margin: 0.75rem 0 0.25rem; font-weight: 500; }
+      #gate p { opacity: 0.7; font-size: 0.85rem; }
+      body.perform header .tag.dev, body.perform #panels .dev-only { display: none; }
+    </style>
+  </head>
+  <body>
+    <div id="gate">
+      <div class="card">
+        <div class="earth">EARTH CAVITY · 7.83 HZ</div>
+        <h2>Morphogen</h2>
+        <p>Living chemical field. First gesture unlocks audio.</p>
+        <button class="primary" id="enter" type="button">ENTER</button>
+      </div>
+    </div>
+    <div id="app">
+      <header>
+        <h1>MORPHOGEN</h1>
+        <span class="tag dev">v2 · CPU / Canvas 2D · Canvas 2D only</span>
+        <span id="status" class="tag">idle</span>
+      </header>
+      <div id="stage">
+        <canvas id="field" width="384" height="384" aria-label="Reaction-diffusion field"></canvas>
+        <div id="hud">click / drag to seed · Hum on ENTER</div>
+      </div>
+      <div id="panels">
+        <button type="button" data-panel="field">Field</button>
+        <button type="button" data-panel="image">Image</button>
+        <button type="button" data-panel="body">Body</button>
+        <button type="button" data-panel="sound">Sound</button>
+        <button type="button" data-panel="sync">Sync</button>
+        <button type="button" id="lockLoop">Lock loop</button>
+        <button type="button" id="resetField">Reset</button>
+        <span class="chip dev-only" id="panelNote">panels: stubs</span>
+      </div>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

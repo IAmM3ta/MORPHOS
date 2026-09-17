@@ -1,0 +1,17 @@
+{
+  "name": "morphogen-v2",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Morphogen v2 \u2014 CPU Gray\u2013Scott + Canvas 2D (GPU contexts forbidden)",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "check:nowebgl": "rg -n -i \"webgl|webgpu|getContext\\(['\\\"]webgl\" src && exit 1 || echo 'OK: no GPU canvas context APIs in src'"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.3",
+    "vite": "^5.4.11"
+  }
+}
