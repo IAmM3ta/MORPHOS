@@ -6,6 +6,8 @@ Ship a tiny latent vector; reassemble a high-fidelity image with a frozen diffus
 
 > RedBot research scaffold. Extreme rate reduction via a learned (mock) bottleneck, then generative reconstruction.
 
+Also in this repo: **[Morphogen v2](./morphogen-v2/)** — the living RD audiovisual instrument rebuilt **without WebGL** (CPU Gray–Scott + Canvas 2D). See [MORPHOS and Morphogen](./docs/MORPHOS-AND-MORPHOGEN.md) and the [red-team brief](./docs/morphogen-redteam/MASTER-BRIEF.md).
+
 ## Architecture (IMAGE_8)
 
 ```mermaid
@@ -34,7 +36,7 @@ flowchart LR
 | Decode path | VAE → img2img | Avoids incorrect `latents=` text2img shortcuts |
 | Rate–distortion | Not optimized | No bitrate entropy coding yet |
 
-## Quick start
+## Quick start (codec)
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
@@ -52,7 +54,15 @@ pip install pytest torch torchvision Pillow requests
 PYTHONPATH=. pytest tests/ -q
 ```
 
-## CLI
+## Morphogen v2 (no WebGL)
+
+```bash
+cd morphogen-v2 && npm install && npm run dev
+```
+
+Open `http://127.0.0.1:5173` → ENTER → drag to seed colonies. `npm run check:nowebgl` must stay clean.
+
+## CLI (codec)
 
 | Flag | Default | Meaning |
 |------|---------|---------|
