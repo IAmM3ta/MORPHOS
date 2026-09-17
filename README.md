@@ -34,7 +34,9 @@ flowchart LR
 | SD 1.5 VAE + UNet | Real (pretrained) | Diffusers `runwayml/stable-diffusion-v1-5` |
 | Compression / decompression MLPs | **Untrained mocks** | Shape demo only — train end-to-end in production |
 | Decode path | VAE → img2img | Avoids incorrect `latents=` text2img shortcuts |
-| Rate–distortion | Not optimized | No bitrate entropy coding yet |
+| Rate–distortion | Illustrative only | `rate_stats()` / `--compact-dim`; FP32 bytes, no entropy coding yet |
+
+Default illustrative rate at 512²: **256×4 B = 1024 B** → **~0.031 bpp** before generative decode (not a trained RD curve).
 
 ## Quick start (codec)
 
@@ -72,6 +74,7 @@ Open `http://127.0.0.1:5173` → ENTER → drag to seed colonies. `npm run check
 | `--seed` | 42 | Reproducibility |
 | `--out-dir` | `.` | Writes `original_input.png` + `generative_reassembled_output.png` |
 | `--model-id` | `runwayml/stable-diffusion-v1-5` | Diffusers model |
+| `--compact-dim` | 256 | Mock compact code length (floats); drives `rate_stats()` |
 
 ## Known limitations
 
@@ -81,7 +84,13 @@ Open `http://127.0.0.1:5173` → ENTER → drag to seed colonies. `npm run check
 
 ## Project status
 
-MORPHOS under RedBot ops. Daily commits refine architecture, docs, and eval harnesses.
+MORPHOS under RedBot ops. Daily commits refine architecture, docs, and eval harnesses. See [STATUS.md](STATUS.md) for the dated cadence log.
+
+### Changelog
+
+- **2026-09-17 (09:00 ET)** — `rate_stats()` / `describe_rate()`, CLI `--compact-dim`, encode-time bpp print, expanded shape tests; [STATUS.md](STATUS.md) cadence entry.
+- **2026-09-17 (earlier)** — Morphogen v2 (no WebGL) scaffold + red-team brief; root README links.
+- **2026-09-17** — Initial IMAGE_8 generative compression codec scaffold.
 
 ## License
 

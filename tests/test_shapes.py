@@ -34,3 +34,33 @@ def test_fallback_image():
     img = make_fallback_image(256)
     assert img.size == (256, 256)
     assert img.mode == "RGB"
+
+
+def test_load_rgb_image_from_pil():
+    from generative_codec import load_rgb_image
+
+    src = Image.new("RGB", (100, 80), (10, 20, 30))
+    out = load_rgb_image(src, size=64)
+    assert out.size == (64, 64)
+    assert out.mode == "RGB"
+
+
+def test_codec_latent_constants():
+    from generative_codec import GenerativeCompressionCodec
+
+    assert GenerativeCompressionCodec.FLAT_DIM == 4 * 64 * 64
+    assert GenerativeCompressionCodec.LATENT_C == 4
+    assert GenerativeCompressionCodec.VAE_SCALING_FACTOR == 0.18215
+
+
+def test_rate_stats_default_compact():
+    from generative_codec import rate_stats
+
+    s = rate_stats(compact_dim=256, image_side=512)
+    assert s["flat_dim"] == 16384
+    assert s["compact_dim"] == 256
+    assert s["full_latent_bytes"] == 16384 * 4
+    assert s["compact_code_bytes"] == 256 * 4  # 1024 B ≈ 1 KiB FP32
+    assert s["compression_ratio_vs_flat"] == 64.0
+    # 1024 bytes * 8 / (512*512) = 0.03125 bpp
+    assert abs(s["bits_per_pixel"] - 0.03125) < 1e-9

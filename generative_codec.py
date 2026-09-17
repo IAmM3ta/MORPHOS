@@ -9,6 +9,10 @@ Conceptual pipeline:
 This module is a research/demo scaffold. The Linear "compression" / "decompression"
 networks are UNTRAINED placeholders. A production system would train them
 end-to-end (or replace with a learned codec) against a reconstruction + rate loss.
+
+Rate note (illustrative FP32, no entropy coding):
+  VAE flat latent 16384 floats ≈ 64 KiB; default compact code 256 floats ≈ 1 KiB.
+  That is ~0.031 bpp at 512² RGB before generative decode — not a trained RD curve.
 """
 
 from __future__ import annotations
@@ -65,6 +69,33 @@ def preprocess_for_vae(image: Image.Image, device: torch.device, dtype: torch.dt
     )
     tensor = to_tensor(image).unsqueeze(0).to(device=device, dtype=dtype)
     return tensor
+
+
+def rate_stats(
+    compact_dim: int = 256,
+    image_side: int = 512,
+    bytes_per_float: int = 4,
+) -> dict:
+    """
+    Illustrative transmission accounting for the mock compact vector (FP32, no entropy).
+
+    Returns byte counts and bits-per-pixel relative to an RGB square of `image_side`.
+    Not a trained rate–distortion operating point — shape/demo only.
+    """
+    flat_dim = GenerativeCompressionCodec.FLAT_DIM
+    full_bytes = flat_dim * bytes_per_float
+    compact_bytes = compact_dim * bytes_per_float
+    pixels = image_side * image_side
+    bpp = (compact_bytes * 8) / float(pixels)
+    return {
+        "flat_dim": flat_dim,
+        "compact_dim": compact_dim,
+        "full_latent_bytes": full_bytes,
+        "compact_code_bytes": compact_bytes,
+        "image_side": image_side,
+        "bits_per_pixel": bpp,
+        "compression_ratio_vs_flat": full_bytes / float(compact_bytes) if compact_bytes else float("inf"),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -132,6 +163,10 @@ class GenerativeCompressionCodec:
         self.compression_model.float()
         self.decompression_model.float()
 
+    def describe_rate(self, image_side: int = 512) -> dict:
+        """Instance wrapper around module-level rate_stats for the active compact_dim."""
+        return rate_stats(compact_dim=self.compact_dim, image_side=image_side)
+
     @torch.no_grad()
     def encode(self, image_input: Image.Image) -> torch.Tensor:
         """Image -> VAE latent -> compact vector (mock learned compression)."""
@@ -145,7 +180,11 @@ class GenerativeCompressionCodec:
 
         print(f"2. Mock extreme compression -> ({self.compact_dim},) vector (NOT RD-pattern)")
         latent_code = self.compression_model(full_latent_flat)
-        print(f"Encoded compact code shape: {tuple(latent_code.shape)}")
+        stats = self.describe_rate()
+        print(
+            f"Encoded compact code shape: {tuple(latent_code.shape)} "
+            f"(~{stats['compact_code_bytes']} B FP32, ~{stats['bits_per_pixel']:.4f} bpp @ {stats['image_side']}²)"
+        )
         return latent_code
 
     @torch.no_grad()
@@ -238,6 +277,12 @@ def main() -> None:
     parser.add_argument("--steps", type=int, default=30)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--model-id", default="runwayml/stable-diffusion-v1-5")
+    parser.add_argument(
+        "--compact-dim",
+        type=int,
+        default=256,
+        help="Mock compact code length (floats). Rate stats use FP32 bytes; no entropy coding.",
+    )
     args = parser.parse_args()
 
     try:
@@ -247,7 +292,8 @@ def main() -> None:
         print(f"Could not load image ({e}); using synthetic fallback.")
         input_image = make_fallback_image()
 
-    codec = GenerativeCompressionCodec(model_id=args.model_id)
+    codec = GenerativeCompressionCodec(model_id=args.model_id, compact_dim=args.compact_dim)
+    print(f"Rate (illustrative): {codec.describe_rate()}")
     compact_code = codec.encode(input_image)
     print(f"\n[Data stream: compact vector {tuple(compact_code.shape)} floats]")
 
