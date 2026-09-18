@@ -35,6 +35,7 @@ flowchart LR
 | Compression / decompression MLPs | **Untrained mocks** | Shape demo only — train end-to-end in production |
 | Decode path | VAE → img2img | Avoids incorrect `latents=` text2img shortcuts |
 | Rate–distortion | Illustrative only | `rate_stats()` / `--compact-dim`; FP32 bytes, no entropy coding yet |
+| Bottleneck train sketch | CPU dry-run | [`bottleneck_train_sketch.py`](./bottleneck_train_sketch.py) + [docs/TRAINING-SKETCH.md](./docs/TRAINING-SKETCH.md) |
 
 Default illustrative rate at 512²: **256×4 B = 1024 B** → **~0.031 bpp** before generative decode (not a trained RD curve).
 
@@ -55,6 +56,15 @@ GPU (`cuda`) is strongly preferred. CPU falls back to FP32 and will be slow. Fir
 pip install pytest torch torchvision Pillow requests
 PYTHONPATH=. pytest tests/ -q
 ```
+
+### Bottleneck train sketch (no model download)
+
+```bash
+PYTHONPATH=. python bottleneck_train_sketch.py --steps 8
+PYTHONPATH=. pytest tests/test_train_sketch.py -q
+```
+
+See [docs/TRAINING-SKETCH.md](./docs/TRAINING-SKETCH.md) for the frozen-prior training plan.
 
 ## Morphogen v2 (no WebGL)
 
@@ -88,6 +98,7 @@ MORPHOS under RedBot ops. Daily commits refine architecture, docs, and eval harn
 
 ### Changelog
 
+- **2026-09-18 (09:00 ET)** — Bottleneck training-loop sketch (`bottleneck_train_sketch.py`), [docs/TRAINING-SKETCH.md](./docs/TRAINING-SKETCH.md), `tests/test_train_sketch.py`; [STATUS.md](STATUS.md) cadence entry.
 - **2026-09-17 (09:00 ET)** — `rate_stats()` / `describe_rate()`, CLI `--compact-dim`, encode-time bpp print, expanded shape tests; [STATUS.md](STATUS.md) cadence entry.
 - **2026-09-17 (earlier)** — Morphogen v2 (no WebGL) scaffold + red-team brief; root README links.
 - **2026-09-17** — Initial IMAGE_8 generative compression codec scaffold.
