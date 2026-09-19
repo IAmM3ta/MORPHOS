@@ -28,7 +28,7 @@ VAE decode / LPIPS / diffusion score term
 | Term | Sketch | Production upgrade |
 |------|--------|--------------------|
 | Reconstruction | Latent MSE on flat codes | VAE-decoded L1/L2 + LPIPS; optional diffusion denoising score |
-| Rate | FP32 bpp hinge via `rate_stats()` | Quantization + entropy model (ANS / bits-back) |
+| Rate | FP32 bpp hinge via `rate_stats()` | Quantization + entropy model (ANS / bits-back) — see [ENTROPY-CODING-NOTES.md](./ENTROPY-CODING-NOTES.md) |
 | Data | `MockLatentBatch` Gaussian | Real `vae.encode` latents from image datasets |
 
 ## Run (CPU, no HF download)
@@ -43,6 +43,6 @@ PYTHONPATH=. pytest tests/test_train_sketch.py -q
 
 - Loading Diffusers / CUDA
 - End-to-end img2img fine-tuning of the UNet
-- Learned entropy coding
+- Learned entropy coding (uniform quant + notes landed; ANS model still later)
 
 Those land in later cadence commits once the loop geometry is stable.

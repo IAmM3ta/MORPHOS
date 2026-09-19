@@ -34,10 +34,10 @@ flowchart LR
 | SD 1.5 VAE + UNet | Real (pretrained) | Diffusers `runwayml/stable-diffusion-v1-5` |
 | Compression / decompression MLPs | **Untrained mocks** | Shape demo only — train end-to-end in production |
 | Decode path | VAE → img2img | Avoids incorrect `latents=` text2img shortcuts |
-| Rate–distortion | Illustrative only | `rate_stats()` / `--compact-dim`; FP32 bytes, no entropy coding yet |
+| Rate–distortion | Illustrative only | `rate_stats()` FP32 + `quantized_rate_stats()` uniform codebook; see [ENTROPY-CODING-NOTES.md](./docs/ENTROPY-CODING-NOTES.md) |
 | Bottleneck train sketch | CPU dry-run | [`bottleneck_train_sketch.py`](./bottleneck_train_sketch.py) + [docs/TRAINING-SKETCH.md](./docs/TRAINING-SKETCH.md) |
 
-Default illustrative rate at 512²: **256×4 B = 1024 B** → **~0.031 bpp** before generative decode (not a trained RD curve).
+Default illustrative rate at 512²: **256×4 B = 1024 B** → **~0.031 bpp** before generative decode (not a trained RD curve). Uniform 8-bit symbols on the same dim sketch **~0.0078 bpp** — still not ANS.
 
 ## Quick start (codec)
 
@@ -64,7 +64,7 @@ PYTHONPATH=. python bottleneck_train_sketch.py --steps 8
 PYTHONPATH=. pytest tests/test_train_sketch.py -q
 ```
 
-See [docs/TRAINING-SKETCH.md](./docs/TRAINING-SKETCH.md) for the frozen-prior training plan.
+See [docs/TRAINING-SKETCH.md](./docs/TRAINING-SKETCH.md) for the frozen-prior training plan and [docs/ENTROPY-CODING-NOTES.md](./docs/ENTROPY-CODING-NOTES.md) for the rate ladder beyond FP32.
 
 ## Morphogen v2 (no WebGL)
 
@@ -85,6 +85,7 @@ Open `http://127.0.0.1:5173` → ENTER → drag to seed colonies. `npm run check
 | `--out-dir` | `.` | Writes `original_input.png` + `generative_reassembled_output.png` |
 | `--model-id` | `runwayml/stable-diffusion-v1-5` | Diffusers model |
 | `--compact-dim` | 256 | Mock compact code length (floats); drives `rate_stats()` |
+| `--quant-levels` | 256 | Uniform codebook size for `quantized_rate_stats` print |
 
 ## Known limitations
 
@@ -98,6 +99,7 @@ MORPHOS under RedBot ops. Daily commits refine architecture, docs, and eval harn
 
 ### Changelog
 
+- **2026-09-19 (09:00 ET)** — Entropy/coding notes (`docs/ENTROPY-CODING-NOTES.md`), `quantize_uniform` / `quantized_rate_stats`, CLI `--quant-levels`, expanded shape tests; [STATUS.md](STATUS.md) cadence entry.
 - **2026-09-18 (09:00 ET)** — Bottleneck training-loop sketch (`bottleneck_train_sketch.py`), [docs/TRAINING-SKETCH.md](./docs/TRAINING-SKETCH.md), `tests/test_train_sketch.py`; [STATUS.md](STATUS.md) cadence entry.
 - **2026-09-17 (09:00 ET)** — `rate_stats()` / `describe_rate()`, CLI `--compact-dim`, encode-time bpp print, expanded shape tests; [STATUS.md](STATUS.md) cadence entry.
 - **2026-09-17 (earlier)** — Morphogen v2 (no WebGL) scaffold + red-team brief; root README links.

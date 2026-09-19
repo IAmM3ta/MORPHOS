@@ -13,11 +13,13 @@ end-to-end (or replace with a learned codec) against a reconstruction + rate los
 Rate note (illustrative FP32, no entropy coding):
   VAE flat latent 16384 floats ≈ 64 KiB; default compact code 256 floats ≈ 1 KiB.
   That is ~0.031 bpp at 512² RGB before generative decode — not a trained RD curve.
+  See also quantize_uniform / quantized_rate_stats and docs/ENTROPY-CODING-NOTES.md.
 """
 
 from __future__ import annotations
 
 import argparse
+import math
 from io import BytesIO
 from typing import Optional, Union
 
@@ -98,6 +100,81 @@ def rate_stats(
     }
 
 
+def quantize_uniform(
+    code: torch.Tensor,
+    levels: int = 256,
+    *,
+    code_min: Optional[float] = None,
+    code_max: Optional[float] = None,
+) -> tuple[torch.Tensor, dict]:
+    """
+    Uniform scalar quantization sketch for compact codes (no entropy coder).
+
+    Maps each float into one of `levels` bins over [lo, hi] (explicit bounds or
+    data min/max), then dequantizes to bin centers. Returns (dequantized, meta).
+    See docs/ENTROPY-CODING-NOTES.md for the FP32 → discrete → ANS ladder.
+    """
+    if levels < 2:
+        raise ValueError("levels must be >= 2")
+    x = code.float()
+    lo = float(x.min()) if code_min is None else float(code_min)
+    hi = float(x.max()) if code_max is None else float(code_max)
+    if hi <= lo:
+        # Degenerate range: emit mid-level constant
+        mid = torch.full_like(x, lo)
+        meta = {
+            "levels": levels,
+            "code_min": lo,
+            "code_max": hi,
+            "bits_per_symbol": math.log2(levels),
+            "degenerate_range": True,
+        }
+        return mid, meta
+    # Map to [0, levels-1], round, clamp, then back to [lo, hi]
+    scaled = (x - lo) / (hi - lo) * (levels - 1)
+    indices = scaled.round().clamp(0, levels - 1)
+    dequant = lo + indices / (levels - 1) * (hi - lo)
+    meta = {
+        "levels": levels,
+        "code_min": lo,
+        "code_max": hi,
+        "bits_per_symbol": math.log2(levels),
+        "degenerate_range": False,
+    }
+    return dequant, meta
+
+
+def quantized_rate_stats(
+    compact_dim: int = 256,
+    levels: int = 256,
+    image_side: int = 512,
+) -> dict:
+    """
+    Illustrative rate if each compact symbol costs exactly log2(levels) bits.
+
+    Uniform codebook bound — still not ANS / learned entropy. Compare to
+    rate_stats() FP32 accounting; see docs/ENTROPY-CODING-NOTES.md.
+    """
+    if levels < 2:
+        raise ValueError("levels must be >= 2")
+    bits_per_symbol = math.log2(levels)
+    total_bits = compact_dim * bits_per_symbol
+    pixels = image_side * image_side
+    bpp = total_bits / float(pixels)
+    fp32 = rate_stats(compact_dim=compact_dim, image_side=image_side)
+    return {
+        "compact_dim": compact_dim,
+        "levels": levels,
+        "bits_per_symbol": bits_per_symbol,
+        "total_bits": total_bits,
+        "coded_bytes_uniform": total_bits / 8.0,
+        "image_side": image_side,
+        "bits_per_pixel": bpp,
+        "fp32_bits_per_pixel": fp32["bits_per_pixel"],
+        "ratio_vs_fp32": fp32["bits_per_pixel"] / bpp if bpp else float("inf"),
+    }
+
+
 # ---------------------------------------------------------------------------
 # Codec
 # ---------------------------------------------------------------------------
@@ -166,6 +243,12 @@ class GenerativeCompressionCodec:
     def describe_rate(self, image_side: int = 512) -> dict:
         """Instance wrapper around module-level rate_stats for the active compact_dim."""
         return rate_stats(compact_dim=self.compact_dim, image_side=image_side)
+
+    def describe_quantized_rate(self, levels: int = 256, image_side: int = 512) -> dict:
+        """Uniform-codebook rate sketch for the active compact_dim (see quantized_rate_stats)."""
+        return quantized_rate_stats(
+            compact_dim=self.compact_dim, levels=levels, image_side=image_side
+        )
 
     @torch.no_grad()
     def encode(self, image_input: Image.Image) -> torch.Tensor:
@@ -283,6 +366,12 @@ def main() -> None:
         default=256,
         help="Mock compact code length (floats). Rate stats use FP32 bytes; no entropy coding.",
     )
+    parser.add_argument(
+        "--quant-levels",
+        type=int,
+        default=256,
+        help="Uniform codebook size for quantized_rate_stats print (illustrative; not ANS).",
+    )
     args = parser.parse_args()
 
     try:
@@ -293,7 +382,8 @@ def main() -> None:
         input_image = make_fallback_image()
 
     codec = GenerativeCompressionCodec(model_id=args.model_id, compact_dim=args.compact_dim)
-    print(f"Rate (illustrative): {codec.describe_rate()}")
+    print(f"Rate (illustrative FP32): {codec.describe_rate()}")
+    print(f"Rate (uniform {args.quant_levels}-level sketch): {codec.describe_quantized_rate(levels=args.quant_levels)}")
     compact_code = codec.encode(input_image)
     print(f"\n[Data stream: compact vector {tuple(compact_code.shape)} floats]")
 

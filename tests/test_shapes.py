@@ -1,5 +1,7 @@
 """Lightweight shape tests — no Stable Diffusion weights required."""
 
+import math
+
 import torch
 import torch.nn as nn
 from PIL import Image
@@ -64,3 +66,41 @@ def test_rate_stats_default_compact():
     assert s["compression_ratio_vs_flat"] == 64.0
     # 1024 bytes * 8 / (512*512) = 0.03125 bpp
     assert abs(s["bits_per_pixel"] - 0.03125) < 1e-9
+
+
+def test_quantize_uniform_roundtrip_shape():
+    from generative_codec import quantize_uniform
+
+    code = torch.linspace(-1.0, 1.0, 256)
+    dequant, meta = quantize_uniform(code, levels=16, code_min=-1.0, code_max=1.0)
+    assert dequant.shape == code.shape
+    assert meta["levels"] == 16
+    assert abs(meta["bits_per_symbol"] - 4.0) < 1e-9
+    assert not meta["degenerate_range"]
+    # Endpoints should land on the range after dequant
+    assert abs(float(dequant[0]) - (-1.0)) < 1e-5
+    assert abs(float(dequant[-1]) - 1.0) < 1e-5
+
+
+def test_quantized_rate_stats_8bit():
+    from generative_codec import quantized_rate_stats, rate_stats
+
+    q = quantized_rate_stats(compact_dim=256, levels=256, image_side=512)
+    assert q["bits_per_symbol"] == 8.0
+    assert q["total_bits"] == 256 * 8
+    assert q["coded_bytes_uniform"] == 256.0
+    # 2048 bits / (512*512) = 0.0078125 bpp
+    assert abs(q["bits_per_pixel"] - 0.0078125) < 1e-12
+    fp32 = rate_stats(compact_dim=256, image_side=512)
+    assert abs(q["fp32_bits_per_pixel"] - fp32["bits_per_pixel"]) < 1e-12
+    assert abs(q["ratio_vs_fp32"] - 4.0) < 1e-9  # 32-bit vs 8-bit symbols
+
+
+def test_quantize_uniform_rejects_bad_levels():
+    from generative_codec import quantize_uniform
+
+    try:
+        quantize_uniform(torch.zeros(4), levels=1)
+        assert False, "expected ValueError"
+    except ValueError:
+        pass
