@@ -2,6 +2,23 @@
 
 RedBot daily cadence notes for `IAmM3ta/MORPHOS`. Newest first.
 
+## 2026-09-21 (09:00 ET — daily commit)
+
+**Landed:** Straight-through estimator (STE) uniform quantization inside the bottleneck train sketch.
+
+- Added `straight_through_quantize()` in `generative_codec.py` (hard forward = `quantize_uniform`, identity STE backward).
+- Wired STE into `bottleneck_train_sketch.train_step` / `run_sketch_epochs` / CLI (`--ste-quant`, `--quant-levels`); rate hinge swaps to `quantized_rate_penalty_bpp`.
+- Extended shape + train-sketch tests (STE forward match, grad pass-through, STE train step).
+- Updated `docs/ENTROPY-CODING-NOTES.md` and `docs/TRAINING-SKETCH.md`; README Changelog.
+
+**Reviewed:** Sep 20 cadence left STE drafts on the box but no GitHub commit landed (gap). Codified and pushed those changes today. Morphogen v2 / red-team brief unchanged this pass.
+
+**Next focus candidates:** factorized entropy-model rate term, learned quant scales, wire real VAE latents into the sketch, Morphogen Sync auth hello hardening.
+
+## 2026-09-20 (cadence gap)
+
+Routine fired and reported success, but no commit reached `main`. STE/quant train-sketch work was staged locally and completed on 2026-09-21.
+
 ## 2026-09-19 (09:00 ET — daily commit)
 
 **Landed:** Entropy / coding notes and a uniform-quantization rate sketch for IMAGE_8.

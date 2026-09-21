@@ -32,7 +32,7 @@ bits-per-pixel on the wire
 | Stage | Scaffold today | Production upgrade |
 |-------|----------------|--------------------|
 | Continuous code | Mock MLP output | Same, or VQ / residual |
-| Quantization | `quantize_uniform()` sketch | Learned scales / STE / soft quantization |
+| Quantization | `quantize_uniform()` + `straight_through_quantize()` STE | Learned scales / soft quantization |
 | Rate proxy | FP32 bpp or `log2(L)` × dim | Factorized / hyperprior entropy model |
 | Bitstream | None | ANS, arithmetic, or bits-back |
 
@@ -54,16 +54,26 @@ Example at 512² with `compact_dim=256`, `levels=256` (8-bit symbols):
 A learned entropy model that assigns fewer bits to likely symbols can go lower;
 a poorly matched model can go higher than the uniform bound.
 
+## STE in the train sketch
+
+`straight_through_quantize(code, levels=L)` hard-quantizes in the forward pass
+(same bins as `quantize_uniform`) and uses the identity STE so compressor
+gradients still flow: `code + (q - code).detach()`.
+
+`bottleneck_train_sketch.train_step(..., use_ste_quant=True)` inserts that
+between compress and expand, and swaps the rate hinge to
+`quantized_rate_penalty_bpp` (uniform `log2(L)` × dim). CLI: `--ste-quant`
+`--quant-levels`.
+
 ## What to plug in next
 
-1. **STE / soft quant** inside `bottleneck_train_sketch.train_step` so gradients
-   flow through the discrete bottleneck.
-2. **Factorized entropy model** (small MLP or histogram) → rate term ≈ mean
-   `−log p(ẑ)` instead of the FP32 hinge.
-3. **Hyperprior** (Ballé-style) if spatial structure returns (today's code is a
+1. **Factorized entropy model** (small MLP or histogram) → rate term ≈ mean
+   `−log p(ẑ)` instead of the FP32 / uniform hinge.
+2. **Hyperprior** (Ballé-style) if spatial structure returns (today's code is a
    flat vector).
-4. **ANS encode/decode** only after the rate term is calibrated — bitstream
+3. **ANS encode/decode** only after the rate term is calibrated — bitstream
    plumbing is orthogonal to learning the bottleneck geometry.
+4. **Learned quant scales** (per-channel) instead of fixed `[code_min, code_max]`.
 
 ## Out of scope (this note)
 

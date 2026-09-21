@@ -13,7 +13,8 @@ end-to-end (or replace with a learned codec) against a reconstruction + rate los
 Rate note (illustrative FP32, no entropy coding):
   VAE flat latent 16384 floats ≈ 64 KiB; default compact code 256 floats ≈ 1 KiB.
   That is ~0.031 bpp at 512² RGB before generative decode — not a trained RD curve.
-  See also quantize_uniform / quantized_rate_stats and docs/ENTROPY-CODING-NOTES.md.
+  See also quantize_uniform / straight_through_quantize / quantized_rate_stats
+  and docs/ENTROPY-CODING-NOTES.md.
 """
 
 from __future__ import annotations
@@ -173,6 +174,29 @@ def quantized_rate_stats(
         "fp32_bits_per_pixel": fp32["bits_per_pixel"],
         "ratio_vs_fp32": fp32["bits_per_pixel"] / bpp if bpp else float("inf"),
     }
+
+
+def straight_through_quantize(
+    code: torch.Tensor,
+    levels: int = 256,
+    *,
+    code_min: Optional[float] = None,
+    code_max: Optional[float] = None,
+) -> tuple[torch.Tensor, dict]:
+    """
+    Uniform hard quantize in forward; identity STE so gradients flow to `code`.
+
+    Forward matches `quantize_uniform` bin centers. Backward treats the op as
+    identity: `code + (q - code).detach()`. Used by the bottleneck train sketch
+    (`--ste-quant`) so compressor MLPs still train through a discrete bottleneck.
+    See docs/ENTROPY-CODING-NOTES.md.
+    """
+    q, meta = quantize_uniform(code, levels=levels, code_min=code_min, code_max=code_max)
+    # Ensure q is on same dtype/device; STE identity
+    ste = code + (q.to(dtype=code.dtype, device=code.device) - code).detach()
+    meta = dict(meta)
+    meta["ste"] = True
+    return ste, meta
 
 
 # ---------------------------------------------------------------------------

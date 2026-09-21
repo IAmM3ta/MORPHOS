@@ -6,6 +6,7 @@ from bottleneck_train_sketch import (
     MockLatentBatch,
     combined_loss,
     make_bottleneck_pair,
+    quantized_rate_penalty_bpp,
     rate_penalty_bpp,
     reconstruction_mse,
     run_sketch_epochs,
@@ -61,3 +62,37 @@ def test_run_sketch_epochs_reduces_or_finite():
     history = run_sketch_epochs(steps=4, batch_size=2, compact_dim=64, seed=1)
     assert len(history) == 4
     assert all(m.total_loss == m.total_loss for m in history)  # not NaN
+
+
+def test_quantized_rate_penalty_under_budget_is_zero():
+    # 256-dim × 8-bit @ 512² ≈ 0.0078125 bpp < 0.05
+    pen = quantized_rate_penalty_bpp(compact_dim=256, levels=256, image_side=512, target_bpp=0.05)
+    assert float(pen) == 0.0
+
+
+def test_quantized_rate_penalty_over_budget_positive():
+    pen = quantized_rate_penalty_bpp(compact_dim=16384, levels=256, image_side=512, target_bpp=0.01)
+    assert float(pen) > 0.0
+
+
+def test_train_step_ste_quant_closes_and_flags():
+    compact = 64
+    comp, decomp = make_bottleneck_pair(compact_dim=compact)
+    opt = torch.optim.Adam(list(comp.parameters()) + list(decomp.parameters()), lr=1e-3)
+    batch = torch.randn(2, GenerativeCompressionCodec.FLAT_DIM)
+    metrics = train_step(
+        comp, decomp, opt, batch, compact, use_ste_quant=True, quant_levels=16
+    )
+    assert metrics.used_ste_quant is True
+    assert metrics.quant_levels == 16
+    assert metrics.recon_mse >= 0.0
+    assert metrics.total_loss == metrics.total_loss  # not NaN
+
+
+def test_run_sketch_epochs_ste_finite():
+    history = run_sketch_epochs(
+        steps=3, batch_size=2, compact_dim=64, seed=2, use_ste_quant=True, quant_levels=32
+    )
+    assert len(history) == 3
+    assert all(m.used_ste_quant for m in history)
+    assert all(m.total_loss == m.total_loss for m in history)

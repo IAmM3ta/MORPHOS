@@ -104,3 +104,25 @@ def test_quantize_uniform_rejects_bad_levels():
         assert False, "expected ValueError"
     except ValueError:
         pass
+
+
+def test_straight_through_quantize_forward_matches_hard():
+    from generative_codec import quantize_uniform, straight_through_quantize
+
+    code = torch.linspace(-1.0, 1.0, 32, requires_grad=True)
+    ste, meta = straight_through_quantize(code, levels=8, code_min=-1.0, code_max=1.0)
+    hard, _ = quantize_uniform(code.detach(), levels=8, code_min=-1.0, code_max=1.0)
+    assert torch.allclose(ste, hard)
+    assert meta["ste"] is True
+    assert meta["levels"] == 8
+
+
+def test_straight_through_quantize_passes_grad():
+    from generative_codec import straight_through_quantize
+
+    code = torch.randn(16, requires_grad=True)
+    ste, _ = straight_through_quantize(code, levels=16, code_min=-2.0, code_max=2.0)
+    ste.sum().backward()
+    assert code.grad is not None
+    # Identity STE: grad should be ones
+    assert torch.allclose(code.grad, torch.ones_like(code))
