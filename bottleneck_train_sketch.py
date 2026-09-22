@@ -7,8 +7,9 @@ diffusion prior stay frozen. This module is a *shape-faithful sketch*:
 
   - No Stable Diffusion weight download
   - Mock latents stand in for VAE encode output
-  - Rate term uses FP32 byte accounting by default, or uniform log2(L) bpp
-    when STE quantization is enabled — still not a learned entropy model
+  - Rate term uses FP32 byte accounting by default, uniform log2(L) bpp with
+    STE quantization, or a differentiable factorized Laplace prior via
+    `--entropy-rate` (still not ANS / bitstream plumbing)
 
 Swap `MockLatentBatch` for real `vae.encode(...).latent_dist.sample()` and
 attach a perceptual / diffusion-aware reconstruction loss when moving off the
@@ -26,7 +27,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from generative_codec import (
+    FactorizedEntropyModel,
     GenerativeCompressionCodec,
+    factorized_rate_stats,
     quantized_rate_stats,
     rate_stats,
     straight_through_quantize,
@@ -71,6 +74,7 @@ class TrainStepMetrics:
     compact_dim: int
     used_ste_quant: bool = False
     quant_levels: Optional[int] = None
+    used_entropy_rate: bool = False
 
 
 def reconstruction_mse(pred_flat: torch.Tensor, target_flat: torch.Tensor) -> torch.Tensor:
@@ -123,6 +127,28 @@ def quantized_rate_penalty_bpp(
     return torch.tensor(weight * over, dtype=torch.float32)
 
 
+def factorized_rate_penalty_bpp(
+    code: torch.Tensor,
+    entropy_model: FactorizedEntropyModel,
+    image_side: int = 512,
+    *,
+    target_bpp: float = 0.05,
+    weight: float = 1.0,
+    hinge: bool = False,
+) -> torch.Tensor:
+    """
+    Differentiable factorized-prior bpp (mean -log2 p(z) / pixels).
+
+    Default is a soft rate weight on expected bpp (encourages matching the
+    prior). With hinge=True, only penalize when bpp exceeds target_bpp —
+    same shape as the FP32 / uniform hinges.
+    """
+    bpp = entropy_model.rate_bpp(code, image_side=image_side)
+    if hinge:
+        return weight * torch.relu(bpp - target_bpp)
+    return weight * bpp
+
+
 def combined_loss(
     pred_flat: torch.Tensor,
     target_flat: torch.Tensor,
@@ -134,10 +160,26 @@ def combined_loss(
     recon_weight: float = 1.0,
     use_ste_quant: bool = False,
     quant_levels: int = 256,
+    use_entropy_rate: bool = False,
+    code: Optional[torch.Tensor] = None,
+    entropy_model: Optional[FactorizedEntropyModel] = None,
+    entropy_hinge: bool = False,
 ) -> tuple[torch.Tensor, TrainStepMetrics]:
-    """Reconstruction MSE + illustrative rate hinge (FP32 or uniform STE)."""
+    """Reconstruction MSE + FP32 / uniform / factorized-Laplace rate term."""
     recon = reconstruction_mse(pred_flat, target_flat)
-    if use_ste_quant:
+    if use_entropy_rate:
+        if entropy_model is None or code is None:
+            raise ValueError("code and entropy_model required when use_entropy_rate")
+        rate = factorized_rate_penalty_bpp(
+            code,
+            entropy_model,
+            image_side=image_side,
+            target_bpp=target_bpp,
+            weight=rate_weight,
+            hinge=entropy_hinge,
+        )
+        rate_bpp_val = float(entropy_model.rate_bpp(code.detach(), image_side=image_side).cpu())
+    elif use_ste_quant:
         rate = quantized_rate_penalty_bpp(
             compact_dim,
             levels=quant_levels,
@@ -148,6 +190,7 @@ def combined_loss(
         stats = quantized_rate_stats(
             compact_dim=compact_dim, levels=quant_levels, image_side=image_side
         )
+        rate_bpp_val = float(stats["bits_per_pixel"])
     else:
         rate = rate_penalty_bpp(
             compact_dim,
@@ -156,17 +199,19 @@ def combined_loss(
             weight=rate_weight,
         )
         stats = rate_stats(compact_dim=compact_dim, image_side=image_side)
+        rate_bpp_val = float(stats["bits_per_pixel"])
     # Keep rate on the same device as recon for the sum
     rate = rate.to(device=recon.device, dtype=recon.dtype)
     total = recon_weight * recon + rate
     metrics = TrainStepMetrics(
         recon_mse=float(recon.detach().cpu()),
-        rate_bpp=float(stats["bits_per_pixel"]),
+        rate_bpp=rate_bpp_val,
         rate_penalty=float(rate.detach().cpu()),
         total_loss=float(total.detach().cpu()),
         compact_dim=compact_dim,
         used_ste_quant=use_ste_quant,
         quant_levels=quant_levels if use_ste_quant else None,
+        used_entropy_rate=use_entropy_rate,
     )
     return total, metrics
 
@@ -205,16 +250,23 @@ def train_step(
     quant_levels: int = 256,
     quant_code_min: float = -1.0,
     quant_code_max: float = 1.0,
+    use_entropy_rate: bool = False,
+    entropy_model: Optional[FactorizedEntropyModel] = None,
+    entropy_hinge: bool = False,
 ) -> TrainStepMetrics:
     """
     One optimizer step: compress → (optional STE quant) → decompress → loss.
 
     Expects batch_flat shaped (B, FLAT_DIM). Does not touch diffusion weights.
     When use_ste_quant is True, inserts straight_through_quantize between the
-    MLPs and uses the uniform-symbol rate hinge.
+    MLPs and uses the uniform-symbol rate hinge (unless use_entropy_rate).
+    When use_entropy_rate is True, the rate term is the factorized Laplace
+    expected bpp (optionally hinged); entropy_model params must be in optimizer.
     """
     compression.train()
     decompression.train()
+    if entropy_model is not None:
+        entropy_model.train()
     optimizer.zero_grad(set_to_none=True)
 
     code = compression(batch_flat)
@@ -235,9 +287,16 @@ def train_step(
         target_bpp=target_bpp,
         rate_weight=rate_weight,
         recon_weight=recon_weight,
-        use_ste_quant=use_ste_quant,
+        use_ste_quant=use_ste_quant and not use_entropy_rate,
         quant_levels=quant_levels,
+        use_entropy_rate=use_entropy_rate,
+        code=code,
+        entropy_model=entropy_model,
+        entropy_hinge=entropy_hinge,
     )
+    # Report STE if it was applied in the forward path (even when entropy owns the rate term)
+    metrics.used_ste_quant = use_ste_quant
+    metrics.quant_levels = quant_levels if use_ste_quant else None
     loss.backward()
     optimizer.step()
     return metrics
@@ -252,12 +311,18 @@ def run_sketch_epochs(
     seed: int = 0,
     use_ste_quant: bool = False,
     quant_levels: int = 256,
+    use_entropy_rate: bool = False,
+    entropy_hinge: bool = False,
 ) -> list[TrainStepMetrics]:
     """Tiny CPU-only dry run proving the loop closes (for demos / CI)."""
     g = torch.Generator().manual_seed(seed)
     torch.manual_seed(seed)
     compression, decompression = make_bottleneck_pair(compact_dim=compact_dim)
+    entropy_model: Optional[FactorizedEntropyModel] = None
     params = list(compression.parameters()) + list(decompression.parameters())
+    if use_entropy_rate:
+        entropy_model = FactorizedEntropyModel(compact_dim)
+        params = params + list(entropy_model.parameters())
     opt = torch.optim.Adam(params, lr=lr)
     data = MockLatentBatch(batch_size=batch_size)
     history: list[TrainStepMetrics] = []
@@ -271,6 +336,9 @@ def run_sketch_epochs(
             compact_dim,
             use_ste_quant=use_ste_quant,
             quant_levels=quant_levels,
+            use_entropy_rate=use_entropy_rate,
+            entropy_model=entropy_model,
+            entropy_hinge=entropy_hinge,
         )
         history.append(metrics)
     return history
@@ -300,6 +368,16 @@ def main() -> None:
         default=256,
         help="Uniform codebook size when --ste-quant is set (default 256 = 8-bit symbols).",
     )
+    parser.add_argument(
+        "--entropy-rate",
+        action="store_true",
+        help="Use FactorizedEntropyModel expected bpp as the rate term (train prior jointly).",
+    )
+    parser.add_argument(
+        "--entropy-hinge",
+        action="store_true",
+        help="With --entropy-rate, hinge only when bpp exceeds the target (default: soft rate weight).",
+    )
     args = parser.parse_args()
 
     print("MORPHOS bottleneck training sketch (mock latents, frozen-prior path not loaded)")
@@ -309,6 +387,11 @@ def main() -> None:
             f"STE quant levels={args.quant_levels}: "
             f"{quantized_rate_stats(compact_dim=args.compact_dim, levels=args.quant_levels)}"
         )
+    if args.entropy_rate:
+        print(
+            f"factorized Laplace init: "
+            f"{factorized_rate_stats(compact_dim=args.compact_dim)}"
+        )
     history = run_sketch_epochs(
         steps=args.steps,
         batch_size=args.batch_size,
@@ -317,18 +400,25 @@ def main() -> None:
         seed=args.seed,
         use_ste_quant=args.ste_quant,
         quant_levels=args.quant_levels,
+        use_entropy_rate=args.entropy_rate,
+        entropy_hinge=args.entropy_hinge,
     )
     first, last = history[0], history[-1]
-    ste_tag = f" ste={first.used_ste_quant} L={first.quant_levels}" if first.used_ste_quant else ""
+    tags = []
+    if first.used_ste_quant:
+        tags.append(f"ste=True L={first.quant_levels}")
+    if first.used_entropy_rate:
+        tags.append("entropy=True")
+    tag_s = (" " + " ".join(tags)) if tags else ""
     print(
         f"step 0: recon_mse={first.recon_mse:.6f} bpp={first.rate_bpp:.5f} "
-        f"rate_penalty={first.rate_penalty:.6f} total={first.total_loss:.6f}{ste_tag}"
+        f"rate_penalty={first.rate_penalty:.6f} total={first.total_loss:.6f}{tag_s}"
     )
     print(
         f"step {len(history) - 1}: recon_mse={last.recon_mse:.6f} bpp={last.rate_bpp:.5f} "
         f"rate_penalty={last.rate_penalty:.6f} total={last.total_loss:.6f}"
     )
-    print("Sketch complete — factorized entropy rate / real VAE latents next.")
+    print("Sketch complete — learned quant scales / real VAE latents / ANS next.")
 
 
 if __name__ == "__main__":

@@ -33,7 +33,7 @@ bits-per-pixel on the wire
 |-------|----------------|--------------------|
 | Continuous code | Mock MLP output | Same, or VQ / residual |
 | Quantization | `quantize_uniform()` + `straight_through_quantize()` STE | Learned scales / soft quantization |
-| Rate proxy | FP32 bpp or `log2(L)` × dim | Factorized / hyperprior entropy model |
+| Rate proxy | FP32 bpp, `log2(L)` × dim, or **factorized Laplace** `-log2 p(z)` | Hyperprior / autoregressive entropy model |
 | Bitstream | None | ANS, arithmetic, or bits-back |
 
 ## Uniform quantization sketch
@@ -62,18 +62,34 @@ gradients still flow: `code + (q - code).detach()`.
 
 `bottleneck_train_sketch.train_step(..., use_ste_quant=True)` inserts that
 between compress and expand, and swaps the rate hinge to
-`quantized_rate_penalty_bpp` (uniform `log2(L)` × dim). CLI: `--ste-quant`
-`--quant-levels`.
+`quantized_rate_penalty_bpp` (uniform `log2(L)` × dim) unless a factorized
+entropy rate is also enabled. CLI: `--ste-quant` `--quant-levels`.
+
+## Factorized Laplace entropy model
+
+`FactorizedEntropyModel(compact_dim)` is a **fully factorized** Laplace prior
+(independent learnable `loc` / `scale` per compact dimension) — a Ballé-style
+sketch without a hyperprior.
+
+- Per-dim NLL: `-log2 Laplace(z_i; μ_i, b_i) = log2(2b_i) + |z_i − μ_i| / (b_i ln 2)`
+- `rate_bpp(code)` = mean batch sum of NLL bits / `image_side²`
+- `factorized_rate_stats(...)` reports the untrained-init mode cost for docs/CLI
+
+Wire-in: `bottleneck_train_sketch` `--entropy-rate` (optional `--entropy-hinge`)
+trains the prior jointly with the bottleneck. Can combine with `--ste-quant`
+(STE still runs in the forward path; the rate term becomes expected `-log2 p`
+instead of the uniform hinge).
+
+This is still **not** ANS — it is a differentiable expected-codelength proxy.
 
 ## What to plug in next
 
-1. **Factorized entropy model** (small MLP or histogram) → rate term ≈ mean
-   `−log p(ẑ)` instead of the FP32 / uniform hinge.
+1. **Learned quant scales** (per-channel) instead of fixed `[code_min, code_max]`.
 2. **Hyperprior** (Ballé-style) if spatial structure returns (today's code is a
    flat vector).
 3. **ANS encode/decode** only after the rate term is calibrated — bitstream
    plumbing is orthogonal to learning the bottleneck geometry.
-4. **Learned quant scales** (per-channel) instead of fixed `[code_min, code_max]`.
+4. **Discrete categorical prior** over STE indices (closer to a real alphabet).
 
 ## Out of scope (this note)
 

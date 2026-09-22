@@ -126,3 +126,45 @@ def test_straight_through_quantize_passes_grad():
     assert code.grad is not None
     # Identity STE: grad should be ones
     assert torch.allclose(code.grad, torch.ones_like(code))
+
+
+def test_factorized_entropy_model_shapes_and_grad():
+    from generative_codec import FactorizedEntropyModel
+
+    model = FactorizedEntropyModel(8)
+    code = torch.randn(2, 8, requires_grad=True)
+    nll = model.nll_bits(code)
+    assert nll.shape == (2, 8)
+    bpp = model.rate_bpp(code, image_side=512)
+    assert bpp.ndim == 0
+    bpp.backward()
+    assert code.grad is not None
+    assert model.loc.grad is not None
+
+
+def test_factorized_rate_stats_init_sketch():
+    from generative_codec import factorized_rate_stats
+    import math
+
+    s = factorized_rate_stats(compact_dim=256, image_side=512)
+    assert s["compact_dim"] == 256
+    # softplus(0)+eps → ~0.47 bits/dim at mode; bpp << FP32 0.03125
+    assert s["bits_per_pixel"] < s["fp32_bits_per_pixel"]
+    assert s["mean_bits_per_dim"] == math.log2(2.0 * (math.log1p(math.e) + 1e-6))
+    assert abs(s["total_bits"] - 256 * s["mean_bits_per_dim"]) < 1e-9
+
+
+def test_factorized_entropy_rejects_bad_dim():
+    from generative_codec import FactorizedEntropyModel
+
+    try:
+        FactorizedEntropyModel(0)
+        assert False, "expected ValueError"
+    except ValueError:
+        pass
+    model = FactorizedEntropyModel(4)
+    try:
+        model.nll_bits(torch.zeros(3))
+        assert False, "expected ValueError"
+    except ValueError:
+        pass

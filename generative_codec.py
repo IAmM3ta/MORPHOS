@@ -13,8 +13,8 @@ end-to-end (or replace with a learned codec) against a reconstruction + rate los
 Rate note (illustrative FP32, no entropy coding):
   VAE flat latent 16384 floats ≈ 64 KiB; default compact code 256 floats ≈ 1 KiB.
   That is ~0.031 bpp at 512² RGB before generative decode — not a trained RD curve.
-  See also quantize_uniform / straight_through_quantize / quantized_rate_stats
-  and docs/ENTROPY-CODING-NOTES.md.
+  See also quantize_uniform / straight_through_quantize / quantized_rate_stats,
+  FactorizedEntropyModel, and docs/ENTROPY-CODING-NOTES.md.
 """
 
 from __future__ import annotations
@@ -28,6 +28,7 @@ import numpy as np
 import requests
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from PIL import Image
 from torchvision import transforms
 
@@ -199,6 +200,89 @@ def straight_through_quantize(
     return ste, meta
 
 
+class FactorizedEntropyModel(nn.Module):
+    """
+    Fully factorized Laplace prior over compact codes (Ballé-style sketch).
+
+    Independent loc / scale per dimension. Differentiable rate:
+      R = E[ sum_i -log2 Laplace(z_i; μ_i, b_i) ] / image_side²  (bpp)
+
+    Not ANS — expected codelength under this prior. Train jointly with the
+    bottleneck so the prior tracks the code distribution. See
+    docs/ENTROPY-CODING-NOTES.md.
+    """
+
+    def __init__(self, compact_dim: int):
+        super().__init__()
+        if compact_dim < 1:
+            raise ValueError("compact_dim must be >= 1")
+        self.compact_dim = compact_dim
+        self.loc = nn.Parameter(torch.zeros(compact_dim))
+        self.log_scale = nn.Parameter(torch.zeros(compact_dim))
+
+    def scale(self) -> torch.Tensor:
+        """Positive scale b = softplus(log_scale) + eps."""
+        return F.softplus(self.log_scale) + 1e-6
+
+    def nll_bits(self, code: torch.Tensor) -> torch.Tensor:
+        """Per-element -log2 p(code); broadcasts loc/scale over leading dims."""
+        if code.shape[-1] != self.compact_dim:
+            raise ValueError(
+                f"code last dim {code.shape[-1]} != compact_dim {self.compact_dim}"
+            )
+        loc = self.loc.to(device=code.device, dtype=code.dtype)
+        scale = self.scale().to(device=code.device, dtype=code.dtype)
+        # Laplace: -log2 p(x) = log2(2b) + |x-μ| / (b ln 2)
+        ln2 = math.log(2.0)
+        return torch.log2(2.0 * scale) + (code - loc).abs() / (scale * ln2)
+
+    def total_bits(self, code: torch.Tensor) -> torch.Tensor:
+        """Mean over batch of summed per-dim NLL bits. Accepts (D,) or (B, D)."""
+        nll = self.nll_bits(code)
+        if nll.ndim == 1:
+            return nll.sum()
+        return nll.reshape(nll.shape[0], -1).sum(dim=-1).mean()
+
+    def rate_bpp(self, code: torch.Tensor, image_side: int = 512) -> torch.Tensor:
+        """Expected bits-per-pixel under this prior for an RGB square."""
+        pixels = float(image_side * image_side)
+        return self.total_bits(code) / pixels
+
+
+def factorized_rate_stats(
+    compact_dim: int = 256,
+    image_side: int = 512,
+    *,
+    mean_bits_per_dim: Optional[float] = None,
+) -> dict:
+    """
+    Illustrative bpp if each compact dim costs `mean_bits_per_dim` under a
+    factorized Laplace prior.
+
+    Default mean_bits_per_dim is the untrained-init mode cost
+    (-log2 Laplace at x=μ with b=softplus(0)+eps) — not a measured bitstream.
+    Compare to rate_stats / quantized_rate_stats; see ENTROPY-CODING-NOTES.
+    """
+    if mean_bits_per_dim is None:
+        b = math.log1p(math.e) + 1e-6  # softplus(0) + eps
+        mean_bits_per_dim = math.log2(2.0 * b)
+    total_bits = compact_dim * float(mean_bits_per_dim)
+    pixels = image_side * image_side
+    bpp = total_bits / float(pixels)
+    fp32 = rate_stats(compact_dim=compact_dim, image_side=image_side)
+    uni = quantized_rate_stats(compact_dim=compact_dim, levels=256, image_side=image_side)
+    return {
+        "compact_dim": compact_dim,
+        "mean_bits_per_dim": float(mean_bits_per_dim),
+        "total_bits": total_bits,
+        "image_side": image_side,
+        "bits_per_pixel": bpp,
+        "fp32_bits_per_pixel": fp32["bits_per_pixel"],
+        "uniform8_bits_per_pixel": uni["bits_per_pixel"],
+        "note": "expected -log2 p under factorized Laplace sketch; not ANS",
+    }
+
+
 # ---------------------------------------------------------------------------
 # Codec
 # ---------------------------------------------------------------------------
@@ -273,6 +357,10 @@ class GenerativeCompressionCodec:
         return quantized_rate_stats(
             compact_dim=self.compact_dim, levels=levels, image_side=image_side
         )
+
+    def describe_factorized_rate(self, image_side: int = 512) -> dict:
+        """Untrained-init factorized Laplace bpp sketch for the active compact_dim."""
+        return factorized_rate_stats(compact_dim=self.compact_dim, image_side=image_side)
 
     @torch.no_grad()
     def encode(self, image_input: Image.Image) -> torch.Tensor:
@@ -408,6 +496,7 @@ def main() -> None:
     codec = GenerativeCompressionCodec(model_id=args.model_id, compact_dim=args.compact_dim)
     print(f"Rate (illustrative FP32): {codec.describe_rate()}")
     print(f"Rate (uniform {args.quant_levels}-level sketch): {codec.describe_quantized_rate(levels=args.quant_levels)}")
+    print(f"Rate (factorized Laplace init sketch): {codec.describe_factorized_rate()}")
     compact_code = codec.encode(input_image)
     print(f"\n[Data stream: compact vector {tuple(compact_code.shape)} floats]")
 

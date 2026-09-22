@@ -2,6 +2,18 @@
 
 RedBot daily cadence notes for `IAmM3ta/MORPHOS`. Newest first.
 
+## 2026-09-22 (09:00 ET — daily commit)
+
+**Landed:** Factorized Laplace entropy-model rate term for the IMAGE_8 bottleneck sketch.
+
+- Added `FactorizedEntropyModel` + `factorized_rate_stats()` in `generative_codec.py` (per-dim Laplace prior, differentiable `-log2 p` → bpp).
+- Wired `--entropy-rate` / `--entropy-hinge` into `bottleneck_train_sketch` (joint train of prior + bottleneck; works with or without `--ste-quant`).
+- Extended shape + train-sketch tests; updated `docs/ENTROPY-CODING-NOTES.md` and `docs/TRAINING-SKETCH.md`; README Changelog.
+
+**Reviewed:** STE uniform quant path from 2026-09-21 remains intact. Morphogen v2 / red-team brief unchanged this pass.
+
+**Next focus candidates:** learned quant scales, discrete categorical prior over STE indices, wire real VAE latents into the sketch, Morphogen Sync auth hello hardening.
+
 ## 2026-09-21 (09:00 ET — daily commit)
 
 **Landed:** Straight-through estimator (STE) uniform quantization inside the bottleneck train sketch.
