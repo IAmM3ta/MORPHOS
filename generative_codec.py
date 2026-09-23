@@ -14,7 +14,7 @@ Rate note (illustrative FP32, no entropy coding):
   VAE flat latent 16384 floats ≈ 64 KiB; default compact code 256 floats ≈ 1 KiB.
   That is ~0.031 bpp at 512² RGB before generative decode — not a trained RD curve.
   See also quantize_uniform / straight_through_quantize / quantized_rate_stats,
-  FactorizedEntropyModel, and docs/ENTROPY-CODING-NOTES.md.
+  FactorizedEntropyModel, LearnedQuantAffine, and docs/ENTROPY-CODING-NOTES.md.
 """
 
 from __future__ import annotations
@@ -281,6 +281,52 @@ def factorized_rate_stats(
         "uniform8_bits_per_pixel": uni["bits_per_pixel"],
         "note": "expected -log2 p under factorized Laplace sketch; not ANS",
     }
+
+
+class LearnedQuantAffine(nn.Module):
+    """
+    Per-dimension learned affine before uniform STE quantization.
+
+    Maps code → y = (x − μ) / b, STE-quantizes y on a fixed [-1, 1] grid, then
+    inverse-maps x̂ = y_q · b + μ. Learnable `loc` (μ) and `log_scale` (→ b via
+    softplus) replace fixed `[code_min, code_max]` so each compact dim can adapt
+    its effective dynamic range. Gradients flow to compressor and affine params
+    through the identity STE on y.
+
+    Rate accounting stays uniform `log2(L)` × dim (or factorized Laplace if that
+    path is enabled) — the affine does not change alphabet size. See
+    docs/ENTROPY-CODING-NOTES.md.
+    """
+
+    def __init__(self, compact_dim: int):
+        super().__init__()
+        if compact_dim < 1:
+            raise ValueError("compact_dim must be >= 1")
+        self.compact_dim = compact_dim
+        self.loc = nn.Parameter(torch.zeros(compact_dim))
+        self.log_scale = nn.Parameter(torch.zeros(compact_dim))
+
+    def scale(self) -> torch.Tensor:
+        """Positive half-range b = softplus(log_scale) + eps."""
+        return F.softplus(self.log_scale) + 1e-3
+
+    def ste_quantize(self, code: torch.Tensor, levels: int = 256) -> tuple[torch.Tensor, dict]:
+        """Affine → STE uniform quant on [-1, 1] → inverse affine."""
+        if code.shape[-1] != self.compact_dim:
+            raise ValueError(
+                f"code last dim {code.shape[-1]} != compact_dim {self.compact_dim}"
+            )
+        loc = self.loc.to(device=code.device, dtype=code.dtype)
+        scale = self.scale().to(device=code.device, dtype=code.dtype)
+        y = (code - loc) / scale
+        y_q, meta = straight_through_quantize(
+            y, levels=levels, code_min=-1.0, code_max=1.0
+        )
+        x_hat = y_q * scale + loc
+        meta = dict(meta)
+        meta["learned_affine"] = True
+        meta["affine_scale_mean"] = float(scale.detach().mean().cpu())
+        return x_hat, meta
 
 
 # ---------------------------------------------------------------------------

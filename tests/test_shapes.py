@@ -168,3 +168,35 @@ def test_factorized_entropy_rejects_bad_dim():
         assert False, "expected ValueError"
     except ValueError:
         pass
+
+
+def test_learned_quant_affine_shapes_and_grad():
+    from generative_codec import LearnedQuantAffine
+
+    affine = LearnedQuantAffine(8)
+    code = torch.randn(2, 8, requires_grad=True)
+    x_hat, meta = affine.ste_quantize(code, levels=16)
+    assert x_hat.shape == code.shape
+    assert meta["learned_affine"] is True
+    assert meta["ste"] is True
+    x_hat.sum().backward()
+    assert code.grad is not None
+    assert affine.loc.grad is not None
+    assert affine.log_scale.grad is not None
+
+
+def test_learned_quant_affine_rejects_bad_dim():
+    from generative_codec import LearnedQuantAffine
+
+    try:
+        LearnedQuantAffine(0)
+        assert False, "expected ValueError"
+    except ValueError:
+        pass
+    affine = LearnedQuantAffine(4)
+    try:
+        affine.ste_quantize(torch.zeros(3), levels=8)
+        assert False, "expected ValueError"
+    except ValueError:
+        pass
+

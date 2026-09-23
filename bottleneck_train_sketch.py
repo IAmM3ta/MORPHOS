@@ -8,8 +8,9 @@ diffusion prior stay frozen. This module is a *shape-faithful sketch*:
   - No Stable Diffusion weight download
   - Mock latents stand in for VAE encode output
   - Rate term uses FP32 byte accounting by default, uniform log2(L) bpp with
-    STE quantization, or a differentiable factorized Laplace prior via
-    `--entropy-rate` (still not ANS / bitstream plumbing)
+    STE quantization (optional per-dim `LearnedQuantAffine` scales), or a
+    differentiable factorized Laplace prior via `--entropy-rate` (still not
+    ANS / bitstream plumbing)
 
 Swap `MockLatentBatch` for real `vae.encode(...).latent_dist.sample()` and
 attach a perceptual / diffusion-aware reconstruction loss when moving off the
@@ -29,6 +30,7 @@ import torch.nn.functional as F
 from generative_codec import (
     FactorizedEntropyModel,
     GenerativeCompressionCodec,
+    LearnedQuantAffine,
     factorized_rate_stats,
     quantized_rate_stats,
     rate_stats,
@@ -75,6 +77,7 @@ class TrainStepMetrics:
     used_ste_quant: bool = False
     quant_levels: Optional[int] = None
     used_entropy_rate: bool = False
+    used_learned_quant_scales: bool = False
 
 
 def reconstruction_mse(pred_flat: torch.Tensor, target_flat: torch.Tensor) -> torch.Tensor:
@@ -253,6 +256,7 @@ def train_step(
     use_entropy_rate: bool = False,
     entropy_model: Optional[FactorizedEntropyModel] = None,
     entropy_hinge: bool = False,
+    learned_quant: Optional[LearnedQuantAffine] = None,
 ) -> TrainStepMetrics:
     """
     One optimizer step: compress → (optional STE quant) → decompress → loss.
@@ -260,24 +264,33 @@ def train_step(
     Expects batch_flat shaped (B, FLAT_DIM). Does not touch diffusion weights.
     When use_ste_quant is True, inserts straight_through_quantize between the
     MLPs and uses the uniform-symbol rate hinge (unless use_entropy_rate).
-    When use_entropy_rate is True, the rate term is the factorized Laplace
-    expected bpp (optionally hinged); entropy_model params must be in optimizer.
+    When learned_quant is set, STE uses per-dim LearnedQuantAffine (implies STE);
+    those params must be in the optimizer. When use_entropy_rate is True, the
+    rate term is the factorized Laplace expected bpp (optionally hinged);
+    entropy_model params must be in optimizer.
     """
+    if learned_quant is not None:
+        use_ste_quant = True
     compression.train()
     decompression.train()
     if entropy_model is not None:
         entropy_model.train()
+    if learned_quant is not None:
+        learned_quant.train()
     optimizer.zero_grad(set_to_none=True)
 
     code = compression(batch_flat)
     assert code.shape[-1] == compact_dim
     if use_ste_quant:
-        code, _ = straight_through_quantize(
-            code,
-            levels=quant_levels,
-            code_min=quant_code_min,
-            code_max=quant_code_max,
-        )
+        if learned_quant is not None:
+            code, _ = learned_quant.ste_quantize(code, levels=quant_levels)
+        else:
+            code, _ = straight_through_quantize(
+                code,
+                levels=quant_levels,
+                code_min=quant_code_min,
+                code_max=quant_code_max,
+            )
     recon_flat = decompression(code)
     loss, metrics = combined_loss(
         recon_flat,
@@ -297,6 +310,7 @@ def train_step(
     # Report STE if it was applied in the forward path (even when entropy owns the rate term)
     metrics.used_ste_quant = use_ste_quant
     metrics.quant_levels = quant_levels if use_ste_quant else None
+    metrics.used_learned_quant_scales = learned_quant is not None
     loss.backward()
     optimizer.step()
     return metrics
@@ -313,16 +327,23 @@ def run_sketch_epochs(
     quant_levels: int = 256,
     use_entropy_rate: bool = False,
     entropy_hinge: bool = False,
+    use_learned_quant_scales: bool = False,
 ) -> list[TrainStepMetrics]:
     """Tiny CPU-only dry run proving the loop closes (for demos / CI)."""
+    if use_learned_quant_scales:
+        use_ste_quant = True
     g = torch.Generator().manual_seed(seed)
     torch.manual_seed(seed)
     compression, decompression = make_bottleneck_pair(compact_dim=compact_dim)
     entropy_model: Optional[FactorizedEntropyModel] = None
+    learned_quant: Optional[LearnedQuantAffine] = None
     params = list(compression.parameters()) + list(decompression.parameters())
     if use_entropy_rate:
         entropy_model = FactorizedEntropyModel(compact_dim)
         params = params + list(entropy_model.parameters())
+    if use_learned_quant_scales:
+        learned_quant = LearnedQuantAffine(compact_dim)
+        params = params + list(learned_quant.parameters())
     opt = torch.optim.Adam(params, lr=lr)
     data = MockLatentBatch(batch_size=batch_size)
     history: list[TrainStepMetrics] = []
@@ -339,6 +360,7 @@ def run_sketch_epochs(
             use_entropy_rate=use_entropy_rate,
             entropy_model=entropy_model,
             entropy_hinge=entropy_hinge,
+            learned_quant=learned_quant,
         )
         history.append(metrics)
     return history
@@ -378,15 +400,23 @@ def main() -> None:
         action="store_true",
         help="With --entropy-rate, hinge only when bpp exceeds the target (default: soft rate weight).",
     )
+    parser.add_argument(
+        "--learned-quant-scales",
+        action="store_true",
+        help="Per-dim LearnedQuantAffine before STE quant (implies STE; replaces fixed code_min/max).",
+    )
     args = parser.parse_args()
 
     print("MORPHOS bottleneck training sketch (mock latents, frozen-prior path not loaded)")
     print(f"rate_stats @ compact_dim={args.compact_dim}: {rate_stats(compact_dim=args.compact_dim)}")
-    if args.ste_quant:
+    ste_on = args.ste_quant or args.learned_quant_scales
+    if ste_on:
         print(
             f"STE quant levels={args.quant_levels}: "
             f"{quantized_rate_stats(compact_dim=args.compact_dim, levels=args.quant_levels)}"
         )
+    if args.learned_quant_scales:
+        print("LearnedQuantAffine: per-dim loc/scale → STE on [-1,1] → inverse (trainable)")
     if args.entropy_rate:
         print(
             f"factorized Laplace init: "
@@ -398,15 +428,18 @@ def main() -> None:
         compact_dim=args.compact_dim,
         lr=args.lr,
         seed=args.seed,
-        use_ste_quant=args.ste_quant,
+        use_ste_quant=ste_on,
         quant_levels=args.quant_levels,
         use_entropy_rate=args.entropy_rate,
         entropy_hinge=args.entropy_hinge,
+        use_learned_quant_scales=args.learned_quant_scales,
     )
     first, last = history[0], history[-1]
     tags = []
     if first.used_ste_quant:
         tags.append(f"ste=True L={first.quant_levels}")
+    if first.used_learned_quant_scales:
+        tags.append("learned_affine=True")
     if first.used_entropy_rate:
         tags.append("entropy=True")
     tag_s = (" " + " ".join(tags)) if tags else ""
@@ -418,7 +451,7 @@ def main() -> None:
         f"step {len(history) - 1}: recon_mse={last.recon_mse:.6f} bpp={last.rate_bpp:.5f} "
         f"rate_penalty={last.rate_penalty:.6f} total={last.total_loss:.6f}"
     )
-    print("Sketch complete — learned quant scales / real VAE latents / ANS next.")
+    print("Sketch complete — discrete categorical prior / real VAE latents / ANS next.")
 
 
 if __name__ == "__main__":

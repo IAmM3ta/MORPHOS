@@ -32,7 +32,7 @@ bits-per-pixel on the wire
 | Stage | Scaffold today | Production upgrade |
 |-------|----------------|--------------------|
 | Continuous code | Mock MLP output | Same, or VQ / residual |
-| Quantization | `quantize_uniform()` + `straight_through_quantize()` STE | Learned scales / soft quantization |
+| Quantization | `quantize_uniform()` + STE + **`LearnedQuantAffine`** | Soft / residual / VQ refinements |
 | Rate proxy | FP32 bpp, `log2(L)` × dim, or **factorized Laplace** `-log2 p(z)` | Hyperprior / autoregressive entropy model |
 | Bitstream | None | ANS, arithmetic, or bits-back |
 
@@ -82,14 +82,30 @@ instead of the uniform hinge).
 
 This is still **not** ANS — it is a differentiable expected-codelength proxy.
 
+## Learned per-dim quant scales
+
+`LearnedQuantAffine(compact_dim)` replaces fixed `[code_min, code_max]` with a
+trainable per-dimension affine:
+
+```text
+y = (x − μ) / b          # b = softplus(log_scale) + eps
+y_q = STE_uniform(y)     # fixed grid on [-1, 1], L levels
+x̂ = y_q · b + μ
+```
+
+Identity STE on `y` lets gradients reach both the compressor and `(μ, b)`.
+Alphabet size is unchanged (`log2(L)` × dim for the uniform rate hinge). CLI:
+`bottleneck_train_sketch.py --learned-quant-scales` (implies STE). Combines with
+`--entropy-rate` the same way fixed-bound STE does.
+
 ## What to plug in next
 
-1. **Learned quant scales** (per-channel) instead of fixed `[code_min, code_max]`.
+1. **Discrete categorical prior** over STE indices (closer to a real alphabet).
 2. **Hyperprior** (Ballé-style) if spatial structure returns (today's code is a
    flat vector).
 3. **ANS encode/decode** only after the rate term is calibrated — bitstream
    plumbing is orthogonal to learning the bottleneck geometry.
-4. **Discrete categorical prior** over STE indices (closer to a real alphabet).
+4. **Wire real VAE latents** into the sketch (`MockLatentBatch` → encode).
 
 ## Out of scope (this note)
 

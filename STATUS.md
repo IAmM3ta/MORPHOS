@@ -2,6 +2,18 @@
 
 RedBot daily cadence notes for `IAmM3ta/MORPHOS`. Newest first.
 
+## 2026-09-23 (09:00 ET — daily commit)
+
+**Landed:** Learned per-dimension quant scales (`LearnedQuantAffine`) for the IMAGE_8 bottleneck STE path.
+
+- Added `LearnedQuantAffine` in `generative_codec.py`: per-dim loc / softplus scale → STE uniform on [-1, 1] → inverse affine (replaces fixed `[code_min, code_max]`).
+- Wired `--learned-quant-scales` into `bottleneck_train_sketch` (implies STE; trainable affine params in the Adam set; works with `--entropy-rate`).
+- Extended shape + train-sketch tests; updated `docs/ENTROPY-CODING-NOTES.md` and `docs/TRAINING-SKETCH.md`; README Changelog.
+
+**Reviewed:** Factorized Laplace entropy path from 2026-09-22 remains intact. Morphogen v2 / red-team brief unchanged this pass.
+
+**Next focus candidates:** discrete categorical prior over STE indices, hyperprior notes, wire real VAE latents into the sketch, Morphogen Sync auth hello hardening.
+
 ## 2026-09-22 (09:00 ET — daily commit)
 
 **Landed:** Factorized Laplace entropy-model rate term for the IMAGE_8 bottleneck sketch.

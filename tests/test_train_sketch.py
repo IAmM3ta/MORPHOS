@@ -13,7 +13,7 @@ from bottleneck_train_sketch import (
     run_sketch_epochs,
     train_step,
 )
-from generative_codec import FactorizedEntropyModel, GenerativeCompressionCodec
+from generative_codec import FactorizedEntropyModel, GenerativeCompressionCodec, LearnedQuantAffine
 
 
 def test_make_bottleneck_pair_shapes():
@@ -165,3 +165,72 @@ def test_train_step_ste_plus_entropy_uses_entropy_flag():
     assert metrics.used_entropy_rate is True
     assert metrics.used_ste_quant is True  # STE in forward; entropy owns the rate term
     assert metrics.quant_levels == 16
+
+
+def test_train_step_learned_quant_scales_closes_and_flags():
+    compact = 64
+    comp, decomp = make_bottleneck_pair(compact_dim=compact)
+    affine = LearnedQuantAffine(compact)
+    opt = torch.optim.Adam(
+        list(comp.parameters()) + list(decomp.parameters()) + list(affine.parameters()),
+        lr=1e-3,
+    )
+    batch = torch.randn(2, GenerativeCompressionCodec.FLAT_DIM)
+    metrics = train_step(
+        comp,
+        decomp,
+        opt,
+        batch,
+        compact,
+        quant_levels=16,
+        learned_quant=affine,
+    )
+    assert metrics.used_learned_quant_scales is True
+    assert metrics.used_ste_quant is True
+    assert metrics.quant_levels == 16
+    assert metrics.total_loss == metrics.total_loss  # not NaN
+
+
+def test_run_sketch_epochs_learned_quant_finite():
+    history = run_sketch_epochs(
+        steps=3,
+        batch_size=2,
+        compact_dim=64,
+        seed=4,
+        use_learned_quant_scales=True,
+        quant_levels=32,
+    )
+    assert len(history) == 3
+    assert all(m.used_learned_quant_scales for m in history)
+    assert all(m.used_ste_quant for m in history)
+    assert all(m.total_loss == m.total_loss for m in history)
+
+
+def test_train_step_learned_plus_entropy_flags():
+    compact = 32
+    comp, decomp = make_bottleneck_pair(compact_dim=compact)
+    ent = FactorizedEntropyModel(compact)
+    affine = LearnedQuantAffine(compact)
+    opt = torch.optim.Adam(
+        list(comp.parameters())
+        + list(decomp.parameters())
+        + list(ent.parameters())
+        + list(affine.parameters()),
+        lr=1e-3,
+    )
+    batch = torch.randn(2, GenerativeCompressionCodec.FLAT_DIM)
+    metrics = train_step(
+        comp,
+        decomp,
+        opt,
+        batch,
+        compact,
+        quant_levels=16,
+        use_entropy_rate=True,
+        entropy_model=ent,
+        learned_quant=affine,
+    )
+    assert metrics.used_entropy_rate is True
+    assert metrics.used_learned_quant_scales is True
+    assert metrics.used_ste_quant is True
+
