@@ -200,3 +200,62 @@ def test_learned_quant_affine_rejects_bad_dim():
     except ValueError:
         pass
 
+
+def test_quantize_uniform_exposes_indices():
+    from generative_codec import quantize_uniform
+
+    code = torch.linspace(-1.0, 1.0, 16)
+    dequant, meta = quantize_uniform(code, levels=8, code_min=-1.0, code_max=1.0)
+    idx = meta["indices"]
+    assert idx.shape == code.shape
+    assert idx.dtype == torch.long
+    assert int(idx.min()) >= 0
+    assert int(idx.max()) <= 7
+    assert int(idx[0]) == 0
+    assert int(idx[-1]) == 7
+
+
+def test_categorical_entropy_model_shapes_and_grad():
+    from generative_codec import CategoricalEntropyModel
+
+    model = CategoricalEntropyModel(8, levels=16)
+    indices = torch.randint(0, 16, (2, 8))
+    nll = model.nll_bits(indices)
+    assert nll.shape == (2, 8)
+    bpp = model.rate_bpp(indices, image_side=512)
+    assert bpp.ndim == 0
+    bpp.backward()
+    assert model.logits.grad is not None
+    # Untrained init ≈ uniform → ~log2(16)=4 bits/dim
+    assert abs(float(nll.mean().detach()) - 4.0) < 1e-4
+
+
+def test_categorical_rate_stats_uniform_init():
+    from generative_codec import categorical_rate_stats, quantized_rate_stats
+
+    s = categorical_rate_stats(compact_dim=256, levels=256, image_side=512)
+    uni = quantized_rate_stats(compact_dim=256, levels=256, image_side=512)
+    assert s["levels"] == 256
+    assert abs(s["mean_bits_per_dim"] - 8.0) < 1e-12
+    assert abs(s["bits_per_pixel"] - uni["bits_per_pixel"]) < 1e-12
+
+
+def test_categorical_entropy_rejects_bad_args():
+    from generative_codec import CategoricalEntropyModel
+
+    try:
+        CategoricalEntropyModel(0, levels=8)
+        assert False, "expected ValueError"
+    except ValueError:
+        pass
+    try:
+        CategoricalEntropyModel(4, levels=1)
+        assert False, "expected ValueError"
+    except ValueError:
+        pass
+    model = CategoricalEntropyModel(4, levels=8)
+    try:
+        model.nll_bits(torch.zeros(3, dtype=torch.long))
+        assert False, "expected ValueError"
+    except ValueError:
+        pass

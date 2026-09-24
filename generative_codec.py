@@ -14,7 +14,8 @@ Rate note (illustrative FP32, no entropy coding):
   VAE flat latent 16384 floats ≈ 64 KiB; default compact code 256 floats ≈ 1 KiB.
   That is ~0.031 bpp at 512² RGB before generative decode — not a trained RD curve.
   See also quantize_uniform / straight_through_quantize / quantized_rate_stats,
-  FactorizedEntropyModel, LearnedQuantAffine, and docs/ENTROPY-CODING-NOTES.md.
+  FactorizedEntropyModel, CategoricalEntropyModel, LearnedQuantAffine, and
+  docs/ENTROPY-CODING-NOTES.md.
 """
 
 from __future__ import annotations
@@ -114,7 +115,9 @@ def quantize_uniform(
 
     Maps each float into one of `levels` bins over [lo, hi] (explicit bounds or
     data min/max), then dequantizes to bin centers. Returns (dequantized, meta).
-    See docs/ENTROPY-CODING-NOTES.md for the FP32 → discrete → ANS ladder.
+    `meta["indices"]` holds integer bin ids in `[0, levels-1]` (same shape as
+    `code`) for discrete / categorical rate terms. See
+    docs/ENTROPY-CODING-NOTES.md for the FP32 → discrete → ANS ladder.
     """
     if levels < 2:
         raise ValueError("levels must be >= 2")
@@ -122,14 +125,16 @@ def quantize_uniform(
     lo = float(x.min()) if code_min is None else float(code_min)
     hi = float(x.max()) if code_max is None else float(code_max)
     if hi <= lo:
-        # Degenerate range: emit mid-level constant
+        # Degenerate range: emit mid-level constant; index 0
         mid = torch.full_like(x, lo)
+        indices = torch.zeros_like(x, dtype=torch.long)
         meta = {
             "levels": levels,
             "code_min": lo,
             "code_max": hi,
             "bits_per_symbol": math.log2(levels),
             "degenerate_range": True,
+            "indices": indices,
         }
         return mid, meta
     # Map to [0, levels-1], round, clamp, then back to [lo, hi]
@@ -142,6 +147,7 @@ def quantize_uniform(
         "code_max": hi,
         "bits_per_symbol": math.log2(levels),
         "degenerate_range": False,
+        "indices": indices.long(),
     }
     return dequant, meta
 
@@ -283,6 +289,112 @@ def factorized_rate_stats(
     }
 
 
+class CategoricalEntropyModel(nn.Module):
+    """
+    Fully factorized categorical prior over discrete STE bin indices.
+
+    Learnable logits shaped `(compact_dim, levels)` → per-dimension Categorical.
+    Differentiable rate (w.r.t. logits; indices are hard STE symbols):
+
+      R = E[ sum_i -log2 Categorical(logits_i)[index_i] ] / image_side²  (bpp)
+
+    Closer to a real alphabet than a continuous Laplace-on-floats prior. Still
+    not ANS — expected codelength under this discrete prior. Train jointly with
+    the bottleneck (and optional LearnedQuantAffine). See
+    docs/ENTROPY-CODING-NOTES.md.
+    """
+
+    def __init__(self, compact_dim: int, levels: int = 256):
+        super().__init__()
+        if compact_dim < 1:
+            raise ValueError("compact_dim must be >= 1")
+        if levels < 2:
+            raise ValueError("levels must be >= 2")
+        self.compact_dim = compact_dim
+        self.levels = levels
+        # Untrained init ≈ uniform over L symbols → log2(L) bits/dim
+        self.logits = nn.Parameter(torch.zeros(compact_dim, levels))
+
+    def log_probs(self) -> torch.Tensor:
+        """Per-dim log-softmax over the categorical alphabet: (D, L)."""
+        return F.log_softmax(self.logits, dim=-1)
+
+    def nll_bits(self, indices: torch.Tensor) -> torch.Tensor:
+        """
+        Per-element -log2 p(index); `indices` long tensor shaped (..., D).
+
+        Gradients flow to `logits` only (hard indices are discrete symbols).
+        """
+        if indices.shape[-1] != self.compact_dim:
+            raise ValueError(
+                f"indices last dim {indices.shape[-1]} != compact_dim {self.compact_dim}"
+            )
+        idx = indices.long()
+        # Clamp defensively so a bad STE path cannot index OOB
+        idx = idx.clamp(0, self.levels - 1)
+        log_p = self.log_probs().to(device=idx.device, dtype=torch.float32)  # (D, L)
+        # Gather log-prob of the chosen symbol per dim
+        # Expand log_p over batch dims: (..., D, L)
+        expand_shape = idx.shape + (self.levels,)
+        log_p_exp = log_p.expand(expand_shape[:-2] + log_p.shape) if idx.ndim > 1 else log_p
+        if idx.ndim == 1:
+            chosen = log_p[torch.arange(self.compact_dim, device=idx.device), idx]
+        else:
+            # idx (B, D) → gather along last dim of log_p_exp (B, D, L)
+            chosen = torch.gather(log_p_exp, dim=-1, index=idx.unsqueeze(-1)).squeeze(-1)
+        ln2 = math.log(2.0)
+        return -chosen / ln2
+
+    def total_bits(self, indices: torch.Tensor) -> torch.Tensor:
+        """Mean over batch of summed per-dim NLL bits. Accepts (D,) or (B, D)."""
+        nll = self.nll_bits(indices)
+        if nll.ndim == 1:
+            return nll.sum()
+        return nll.reshape(nll.shape[0], -1).sum(dim=-1).mean()
+
+    def rate_bpp(self, indices: torch.Tensor, image_side: int = 512) -> torch.Tensor:
+        """Expected bits-per-pixel under this categorical prior for an RGB square."""
+        pixels = float(image_side * image_side)
+        return self.total_bits(indices) / pixels
+
+
+def categorical_rate_stats(
+    compact_dim: int = 256,
+    levels: int = 256,
+    image_side: int = 512,
+    *,
+    mean_bits_per_dim: Optional[float] = None,
+) -> dict:
+    """
+    Illustrative bpp if each compact dim costs `mean_bits_per_dim` under a
+    factorized categorical prior over `levels` symbols.
+
+    Default is the untrained-init uniform cost `log2(levels)` — matches
+    `quantized_rate_stats` when the prior is flat. A peaked prior goes lower.
+    Compare to rate_stats / factorized_rate_stats; see ENTROPY-CODING-NOTES.
+    """
+    if levels < 2:
+        raise ValueError("levels must be >= 2")
+    if mean_bits_per_dim is None:
+        mean_bits_per_dim = math.log2(levels)
+    total_bits = compact_dim * float(mean_bits_per_dim)
+    pixels = image_side * image_side
+    bpp = total_bits / float(pixels)
+    fp32 = rate_stats(compact_dim=compact_dim, image_side=image_side)
+    uni = quantized_rate_stats(compact_dim=compact_dim, levels=levels, image_side=image_side)
+    return {
+        "compact_dim": compact_dim,
+        "levels": levels,
+        "mean_bits_per_dim": float(mean_bits_per_dim),
+        "total_bits": total_bits,
+        "image_side": image_side,
+        "bits_per_pixel": bpp,
+        "fp32_bits_per_pixel": fp32["bits_per_pixel"],
+        "uniform_bits_per_pixel": uni["bits_per_pixel"],
+        "note": "expected -log2 p under factorized categorical sketch; not ANS",
+    }
+
+
 class LearnedQuantAffine(nn.Module):
     """
     Per-dimension learned affine before uniform STE quantization.
@@ -311,7 +423,11 @@ class LearnedQuantAffine(nn.Module):
         return F.softplus(self.log_scale) + 1e-3
 
     def ste_quantize(self, code: torch.Tensor, levels: int = 256) -> tuple[torch.Tensor, dict]:
-        """Affine → STE uniform quant on [-1, 1] → inverse affine."""
+        """Affine → STE uniform quant on [-1, 1] → inverse affine.
+
+        `meta["indices"]` are the discrete bin ids on the normalized y-grid
+        (for CategoricalEntropyModel rate terms).
+        """
         if code.shape[-1] != self.compact_dim:
             raise ValueError(
                 f"code last dim {code.shape[-1]} != compact_dim {self.compact_dim}"
@@ -326,6 +442,7 @@ class LearnedQuantAffine(nn.Module):
         meta = dict(meta)
         meta["learned_affine"] = True
         meta["affine_scale_mean"] = float(scale.detach().mean().cpu())
+        # indices already present from quantize_uniform via straight_through_quantize
         return x_hat, meta
 
 
@@ -407,6 +524,12 @@ class GenerativeCompressionCodec:
     def describe_factorized_rate(self, image_side: int = 512) -> dict:
         """Untrained-init factorized Laplace bpp sketch for the active compact_dim."""
         return factorized_rate_stats(compact_dim=self.compact_dim, image_side=image_side)
+
+    def describe_categorical_rate(self, levels: int = 256, image_side: int = 512) -> dict:
+        """Untrained-init factorized categorical bpp sketch (uniform over `levels`)."""
+        return categorical_rate_stats(
+            compact_dim=self.compact_dim, levels=levels, image_side=image_side
+        )
 
     @torch.no_grad()
     def encode(self, image_input: Image.Image) -> torch.Tensor:
@@ -543,6 +666,10 @@ def main() -> None:
     print(f"Rate (illustrative FP32): {codec.describe_rate()}")
     print(f"Rate (uniform {args.quant_levels}-level sketch): {codec.describe_quantized_rate(levels=args.quant_levels)}")
     print(f"Rate (factorized Laplace init sketch): {codec.describe_factorized_rate()}")
+    print(
+        f"Rate (categorical {args.quant_levels}-level init sketch): "
+        f"{codec.describe_categorical_rate(levels=args.quant_levels)}"
+    )
     compact_code = codec.encode(input_image)
     print(f"\n[Data stream: compact vector {tuple(compact_code.shape)} floats]")
 

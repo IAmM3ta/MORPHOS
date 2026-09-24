@@ -4,6 +4,7 @@ import torch
 
 from bottleneck_train_sketch import (
     MockLatentBatch,
+    categorical_rate_penalty_bpp,
     combined_loss,
     factorized_rate_penalty_bpp,
     make_bottleneck_pair,
@@ -13,7 +14,12 @@ from bottleneck_train_sketch import (
     run_sketch_epochs,
     train_step,
 )
-from generative_codec import FactorizedEntropyModel, GenerativeCompressionCodec, LearnedQuantAffine
+from generative_codec import (
+    CategoricalEntropyModel,
+    FactorizedEntropyModel,
+    GenerativeCompressionCodec,
+    LearnedQuantAffine,
+)
 
 
 def test_make_bottleneck_pair_shapes():
@@ -234,3 +240,115 @@ def test_train_step_learned_plus_entropy_flags():
     assert metrics.used_learned_quant_scales is True
     assert metrics.used_ste_quant is True
 
+
+def test_categorical_rate_penalty_is_positive():
+    model = CategoricalEntropyModel(32, levels=16)
+    indices = torch.randint(0, 16, (2, 32))
+    pen = categorical_rate_penalty_bpp(indices, model, image_side=512, weight=1.0)
+    assert float(pen.detach()) > 0.0
+
+
+def test_categorical_rate_hinge_under_budget_can_be_zero():
+    model = CategoricalEntropyModel(8, levels=16)
+    indices = torch.zeros(2, 8, dtype=torch.long)
+    pen = categorical_rate_penalty_bpp(
+        indices, model, image_side=512, target_bpp=10.0, weight=1.0, hinge=True
+    )
+    assert float(pen.detach()) == 0.0
+
+
+def test_train_step_categorical_rate_closes_and_flags():
+    compact = 64
+    levels = 16
+    comp, decomp = make_bottleneck_pair(compact_dim=compact)
+    cat = CategoricalEntropyModel(compact, levels=levels)
+    opt = torch.optim.Adam(
+        list(comp.parameters()) + list(decomp.parameters()) + list(cat.parameters()),
+        lr=1e-3,
+    )
+    batch = torch.randn(2, GenerativeCompressionCodec.FLAT_DIM)
+    metrics = train_step(
+        comp,
+        decomp,
+        opt,
+        batch,
+        compact,
+        quant_levels=levels,
+        use_categorical_rate=True,
+        categorical_model=cat,
+    )
+    assert metrics.used_categorical_rate is True
+    assert metrics.used_ste_quant is True
+    assert metrics.quant_levels == levels
+    assert metrics.rate_bpp > 0.0
+    assert metrics.total_loss == metrics.total_loss  # not NaN
+
+
+def test_run_sketch_epochs_categorical_finite():
+    history = run_sketch_epochs(
+        steps=3,
+        batch_size=2,
+        compact_dim=64,
+        seed=5,
+        use_categorical_rate=True,
+        quant_levels=32,
+    )
+    assert len(history) == 3
+    assert all(m.used_categorical_rate for m in history)
+    assert all(m.used_ste_quant for m in history)
+    assert all(m.total_loss == m.total_loss for m in history)
+
+
+def test_train_step_categorical_plus_learned_flags():
+    compact = 32
+    levels = 16
+    comp, decomp = make_bottleneck_pair(compact_dim=compact)
+    cat = CategoricalEntropyModel(compact, levels=levels)
+    affine = LearnedQuantAffine(compact)
+    opt = torch.optim.Adam(
+        list(comp.parameters())
+        + list(decomp.parameters())
+        + list(cat.parameters())
+        + list(affine.parameters()),
+        lr=1e-3,
+    )
+    batch = torch.randn(2, GenerativeCompressionCodec.FLAT_DIM)
+    metrics = train_step(
+        comp,
+        decomp,
+        opt,
+        batch,
+        compact,
+        quant_levels=levels,
+        use_categorical_rate=True,
+        categorical_model=cat,
+        learned_quant=affine,
+    )
+    assert metrics.used_categorical_rate is True
+    assert metrics.used_learned_quant_scales is True
+    assert metrics.used_ste_quant is True
+
+
+def test_categorical_and_entropy_mutually_exclusive():
+    compact = 16
+    comp, decomp = make_bottleneck_pair(compact_dim=compact)
+    ent = FactorizedEntropyModel(compact)
+    cat = CategoricalEntropyModel(compact, levels=8)
+    opt = torch.optim.Adam(list(comp.parameters()) + list(decomp.parameters()), lr=1e-3)
+    batch = torch.randn(1, GenerativeCompressionCodec.FLAT_DIM)
+    try:
+        train_step(
+            comp,
+            decomp,
+            opt,
+            batch,
+            compact,
+            use_entropy_rate=True,
+            entropy_model=ent,
+            use_categorical_rate=True,
+            categorical_model=cat,
+            quant_levels=8,
+        )
+        assert False, "expected ValueError"
+    except ValueError:
+        pass

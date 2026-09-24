@@ -33,7 +33,7 @@ bits-per-pixel on the wire
 |-------|----------------|--------------------|
 | Continuous code | Mock MLP output | Same, or VQ / residual |
 | Quantization | `quantize_uniform()` + STE + **`LearnedQuantAffine`** | Soft / residual / VQ refinements |
-| Rate proxy | FP32 bpp, `log2(L)` × dim, or **factorized Laplace** `-log2 p(z)` | Hyperprior / autoregressive entropy model |
+| Rate proxy | FP32 bpp, `log2(L)` × dim, factorized Laplace, or **categorical** `-log2 p(index)` | Hyperprior / autoregressive entropy model |
 | Bitstream | None | ANS, arithmetic, or bits-back |
 
 ## Uniform quantization sketch
@@ -98,14 +98,32 @@ Alphabet size is unchanged (`log2(L)` × dim for the uniform rate hinge). CLI:
 `bottleneck_train_sketch.py --learned-quant-scales` (implies STE). Combines with
 `--entropy-rate` the same way fixed-bound STE does.
 
+## Factorized categorical prior (STE indices)
+
+`CategoricalEntropyModel(compact_dim, levels=L)` is a **fully factorized**
+categorical prior over the discrete STE bin indices — closer to a real alphabet
+than continuous Laplace-on-floats.
+
+- Learnable `logits` shaped `(compact_dim, levels)` → per-dim `log_softmax`
+- Rate: `-log2 Categorical(logits_i)[index_i]` summed / `image_side²`
+- Untrained init is uniform → `log2(L)` bits/dim (matches `quantized_rate_stats`)
+- `quantize_uniform` / STE meta expose `indices` (long tensor, same shape as code)
+- Gradients update logits only; indices stay hard symbols from the STE forward
+
+Wire-in: `bottleneck_train_sketch` `--categorical-rate` (implies STE; mutually
+exclusive with `--entropy-rate`). Combines with `--learned-quant-scales` (indices
+are on the normalized `y`-grid). Optional `--entropy-hinge` applies the same
+hinge shape as the Laplace path.
+
+This is still **not** ANS — expected discrete codelength under the categorical.
+
 ## What to plug in next
 
-1. **Discrete categorical prior** over STE indices (closer to a real alphabet).
-2. **Hyperprior** (Ballé-style) if spatial structure returns (today's code is a
+1. **Hyperprior** (Ballé-style) if spatial structure returns (today's code is a
    flat vector).
-3. **ANS encode/decode** only after the rate term is calibrated — bitstream
+2. **ANS encode/decode** only after the rate term is calibrated — bitstream
    plumbing is orthogonal to learning the bottleneck geometry.
-4. **Wire real VAE latents** into the sketch (`MockLatentBatch` → encode).
+3. **Wire real VAE latents** into the sketch (`MockLatentBatch` → encode).
 
 ## Out of scope (this note)
 

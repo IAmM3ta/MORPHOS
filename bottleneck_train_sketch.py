@@ -8,9 +8,10 @@ diffusion prior stay frozen. This module is a *shape-faithful sketch*:
   - No Stable Diffusion weight download
   - Mock latents stand in for VAE encode output
   - Rate term uses FP32 byte accounting by default, uniform log2(L) bpp with
-    STE quantization (optional per-dim `LearnedQuantAffine` scales), or a
-    differentiable factorized Laplace prior via `--entropy-rate` (still not
-    ANS / bitstream plumbing)
+    STE quantization (optional per-dim `LearnedQuantAffine` scales), a
+    differentiable factorized Laplace prior via `--entropy-rate`, or a
+    discrete factorized categorical prior over STE indices via
+    `--categorical-rate` (still not ANS / bitstream plumbing)
 
 Swap `MockLatentBatch` for real `vae.encode(...).latent_dist.sample()` and
 attach a perceptual / diffusion-aware reconstruction loss when moving off the
@@ -28,9 +29,11 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from generative_codec import (
+    CategoricalEntropyModel,
     FactorizedEntropyModel,
     GenerativeCompressionCodec,
     LearnedQuantAffine,
+    categorical_rate_stats,
     factorized_rate_stats,
     quantized_rate_stats,
     rate_stats,
@@ -77,6 +80,7 @@ class TrainStepMetrics:
     used_ste_quant: bool = False
     quant_levels: Optional[int] = None
     used_entropy_rate: bool = False
+    used_categorical_rate: bool = False
     used_learned_quant_scales: bool = False
 
 
@@ -152,6 +156,27 @@ def factorized_rate_penalty_bpp(
     return weight * bpp
 
 
+def categorical_rate_penalty_bpp(
+    indices: torch.Tensor,
+    categorical_model: CategoricalEntropyModel,
+    image_side: int = 512,
+    *,
+    target_bpp: float = 0.05,
+    weight: float = 1.0,
+    hinge: bool = False,
+) -> torch.Tensor:
+    """
+    Differentiable factorized-categorical bpp (mean -log2 p(index) / pixels).
+
+    Gradients update the categorical logits; indices are hard STE symbols.
+    Default soft rate weight; hinge=True mirrors the FP32 / uniform hinges.
+    """
+    bpp = categorical_model.rate_bpp(indices, image_side=image_side)
+    if hinge:
+        return weight * torch.relu(bpp - target_bpp)
+    return weight * bpp
+
+
 def combined_loss(
     pred_flat: torch.Tensor,
     target_flat: torch.Tensor,
@@ -167,10 +192,29 @@ def combined_loss(
     code: Optional[torch.Tensor] = None,
     entropy_model: Optional[FactorizedEntropyModel] = None,
     entropy_hinge: bool = False,
+    use_categorical_rate: bool = False,
+    indices: Optional[torch.Tensor] = None,
+    categorical_model: Optional[CategoricalEntropyModel] = None,
 ) -> tuple[torch.Tensor, TrainStepMetrics]:
-    """Reconstruction MSE + FP32 / uniform / factorized-Laplace rate term."""
+    """Reconstruction MSE + FP32 / uniform / Laplace / categorical rate term."""
+    if use_entropy_rate and use_categorical_rate:
+        raise ValueError("use_entropy_rate and use_categorical_rate are mutually exclusive")
     recon = reconstruction_mse(pred_flat, target_flat)
-    if use_entropy_rate:
+    if use_categorical_rate:
+        if categorical_model is None or indices is None:
+            raise ValueError("indices and categorical_model required when use_categorical_rate")
+        rate = categorical_rate_penalty_bpp(
+            indices,
+            categorical_model,
+            image_side=image_side,
+            target_bpp=target_bpp,
+            weight=rate_weight,
+            hinge=entropy_hinge,
+        )
+        rate_bpp_val = float(
+            categorical_model.rate_bpp(indices.detach(), image_side=image_side).cpu()
+        )
+    elif use_entropy_rate:
         if entropy_model is None or code is None:
             raise ValueError("code and entropy_model required when use_entropy_rate")
         rate = factorized_rate_penalty_bpp(
@@ -215,6 +259,7 @@ def combined_loss(
         used_ste_quant=use_ste_quant,
         quant_levels=quant_levels if use_ste_quant else None,
         used_entropy_rate=use_entropy_rate,
+        used_categorical_rate=use_categorical_rate,
     )
     return total, metrics
 
@@ -257,40 +302,51 @@ def train_step(
     entropy_model: Optional[FactorizedEntropyModel] = None,
     entropy_hinge: bool = False,
     learned_quant: Optional[LearnedQuantAffine] = None,
+    use_categorical_rate: bool = False,
+    categorical_model: Optional[CategoricalEntropyModel] = None,
 ) -> TrainStepMetrics:
     """
     One optimizer step: compress → (optional STE quant) → decompress → loss.
 
     Expects batch_flat shaped (B, FLAT_DIM). Does not touch diffusion weights.
     When use_ste_quant is True, inserts straight_through_quantize between the
-    MLPs and uses the uniform-symbol rate hinge (unless use_entropy_rate).
-    When learned_quant is set, STE uses per-dim LearnedQuantAffine (implies STE);
-    those params must be in the optimizer. When use_entropy_rate is True, the
-    rate term is the factorized Laplace expected bpp (optionally hinged);
-    entropy_model params must be in optimizer.
+    MLPs and uses the uniform-symbol rate hinge (unless a learned entropy rate
+    owns the term). When learned_quant is set, STE uses per-dim
+    LearnedQuantAffine (implies STE); those params must be in the optimizer.
+    When use_entropy_rate is True, the rate term is the factorized Laplace
+    expected bpp (optionally hinged). When use_categorical_rate is True, STE
+    is implied and the rate term is -log2 Categorical(logits)[index] (mutually
+    exclusive with use_entropy_rate); categorical_model params must be in the
+    optimizer.
     """
-    if learned_quant is not None:
+    if use_entropy_rate and use_categorical_rate:
+        raise ValueError("use_entropy_rate and use_categorical_rate are mutually exclusive")
+    if learned_quant is not None or use_categorical_rate:
         use_ste_quant = True
     compression.train()
     decompression.train()
     if entropy_model is not None:
         entropy_model.train()
+    if categorical_model is not None:
+        categorical_model.train()
     if learned_quant is not None:
         learned_quant.train()
     optimizer.zero_grad(set_to_none=True)
 
     code = compression(batch_flat)
     assert code.shape[-1] == compact_dim
+    indices: Optional[torch.Tensor] = None
     if use_ste_quant:
         if learned_quant is not None:
-            code, _ = learned_quant.ste_quantize(code, levels=quant_levels)
+            code, qmeta = learned_quant.ste_quantize(code, levels=quant_levels)
         else:
-            code, _ = straight_through_quantize(
+            code, qmeta = straight_through_quantize(
                 code,
                 levels=quant_levels,
                 code_min=quant_code_min,
                 code_max=quant_code_max,
             )
+        indices = qmeta.get("indices")
     recon_flat = decompression(code)
     loss, metrics = combined_loss(
         recon_flat,
@@ -300,17 +356,21 @@ def train_step(
         target_bpp=target_bpp,
         rate_weight=rate_weight,
         recon_weight=recon_weight,
-        use_ste_quant=use_ste_quant and not use_entropy_rate,
+        use_ste_quant=use_ste_quant and not use_entropy_rate and not use_categorical_rate,
         quant_levels=quant_levels,
         use_entropy_rate=use_entropy_rate,
         code=code,
         entropy_model=entropy_model,
         entropy_hinge=entropy_hinge,
+        use_categorical_rate=use_categorical_rate,
+        indices=indices,
+        categorical_model=categorical_model,
     )
     # Report STE if it was applied in the forward path (even when entropy owns the rate term)
     metrics.used_ste_quant = use_ste_quant
     metrics.quant_levels = quant_levels if use_ste_quant else None
     metrics.used_learned_quant_scales = learned_quant is not None
+    metrics.used_categorical_rate = use_categorical_rate
     loss.backward()
     optimizer.step()
     return metrics
@@ -328,19 +388,26 @@ def run_sketch_epochs(
     use_entropy_rate: bool = False,
     entropy_hinge: bool = False,
     use_learned_quant_scales: bool = False,
+    use_categorical_rate: bool = False,
 ) -> list[TrainStepMetrics]:
     """Tiny CPU-only dry run proving the loop closes (for demos / CI)."""
-    if use_learned_quant_scales:
+    if use_entropy_rate and use_categorical_rate:
+        raise ValueError("use_entropy_rate and use_categorical_rate are mutually exclusive")
+    if use_learned_quant_scales or use_categorical_rate:
         use_ste_quant = True
     g = torch.Generator().manual_seed(seed)
     torch.manual_seed(seed)
     compression, decompression = make_bottleneck_pair(compact_dim=compact_dim)
     entropy_model: Optional[FactorizedEntropyModel] = None
+    categorical_model: Optional[CategoricalEntropyModel] = None
     learned_quant: Optional[LearnedQuantAffine] = None
     params = list(compression.parameters()) + list(decompression.parameters())
     if use_entropy_rate:
         entropy_model = FactorizedEntropyModel(compact_dim)
         params = params + list(entropy_model.parameters())
+    if use_categorical_rate:
+        categorical_model = CategoricalEntropyModel(compact_dim, levels=quant_levels)
+        params = params + list(categorical_model.parameters())
     if use_learned_quant_scales:
         learned_quant = LearnedQuantAffine(compact_dim)
         params = params + list(learned_quant.parameters())
@@ -361,6 +428,8 @@ def run_sketch_epochs(
             entropy_model=entropy_model,
             entropy_hinge=entropy_hinge,
             learned_quant=learned_quant,
+            use_categorical_rate=use_categorical_rate,
+            categorical_model=categorical_model,
         )
         history.append(metrics)
     return history
@@ -405,11 +474,19 @@ def main() -> None:
         action="store_true",
         help="Per-dim LearnedQuantAffine before STE quant (implies STE; replaces fixed code_min/max).",
     )
+    parser.add_argument(
+        "--categorical-rate",
+        action="store_true",
+        help="Use CategoricalEntropyModel over STE indices as the rate term (implies STE; exclusive with --entropy-rate).",
+    )
     args = parser.parse_args()
+
+    if args.entropy_rate and args.categorical_rate:
+        parser.error("--entropy-rate and --categorical-rate are mutually exclusive")
 
     print("MORPHOS bottleneck training sketch (mock latents, frozen-prior path not loaded)")
     print(f"rate_stats @ compact_dim={args.compact_dim}: {rate_stats(compact_dim=args.compact_dim)}")
-    ste_on = args.ste_quant or args.learned_quant_scales
+    ste_on = args.ste_quant or args.learned_quant_scales or args.categorical_rate
     if ste_on:
         print(
             f"STE quant levels={args.quant_levels}: "
@@ -422,6 +499,11 @@ def main() -> None:
             f"factorized Laplace init: "
             f"{factorized_rate_stats(compact_dim=args.compact_dim)}"
         )
+    if args.categorical_rate:
+        print(
+            f"factorized categorical init (L={args.quant_levels}): "
+            f"{categorical_rate_stats(compact_dim=args.compact_dim, levels=args.quant_levels)}"
+        )
     history = run_sketch_epochs(
         steps=args.steps,
         batch_size=args.batch_size,
@@ -433,6 +515,7 @@ def main() -> None:
         use_entropy_rate=args.entropy_rate,
         entropy_hinge=args.entropy_hinge,
         use_learned_quant_scales=args.learned_quant_scales,
+        use_categorical_rate=args.categorical_rate,
     )
     first, last = history[0], history[-1]
     tags = []
@@ -442,6 +525,8 @@ def main() -> None:
         tags.append("learned_affine=True")
     if first.used_entropy_rate:
         tags.append("entropy=True")
+    if first.used_categorical_rate:
+        tags.append("categorical=True")
     tag_s = (" " + " ".join(tags)) if tags else ""
     print(
         f"step 0: recon_mse={first.recon_mse:.6f} bpp={first.rate_bpp:.5f} "
@@ -451,7 +536,7 @@ def main() -> None:
         f"step {len(history) - 1}: recon_mse={last.recon_mse:.6f} bpp={last.rate_bpp:.5f} "
         f"rate_penalty={last.rate_penalty:.6f} total={last.total_loss:.6f}"
     )
-    print("Sketch complete — discrete categorical prior / real VAE latents / ANS next.")
+    print("Sketch complete — hyperprior notes / real VAE latents / ANS next.")
 
 
 if __name__ == "__main__":

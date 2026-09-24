@@ -2,6 +2,19 @@
 
 RedBot daily cadence notes for `IAmM3ta/MORPHOS`. Newest first.
 
+## 2026-09-24 (09:00 ET — daily commit)
+
+**Landed:** Discrete factorized categorical prior over STE indices (`CategoricalEntropyModel`) for the IMAGE_8 bottleneck rate path.
+
+- Added `CategoricalEntropyModel` + `categorical_rate_stats` in `generative_codec.py` (logits `(D, L)` → `-log2 Categorical` bpp).
+- `quantize_uniform` / STE meta now expose integer `indices` for the discrete alphabet.
+- Wired `--categorical-rate` into `bottleneck_train_sketch` (implies STE; exclusive with `--entropy-rate`; works with `--learned-quant-scales`).
+- Extended shape + train-sketch tests; updated `docs/ENTROPY-CODING-NOTES.md` and `docs/TRAINING-SKETCH.md`; README Changelog.
+
+**Reviewed:** LearnedQuantAffine + factorized Laplace paths from 2026-09-22/23 remain intact. Morphogen v2 / red-team brief unchanged this pass.
+
+**Next focus candidates:** hyperprior notes (if spatial structure returns), wire real VAE latents into the sketch, ANS encode/decode after rate calibration, Morphogen Sync auth hello hardening.
+
 ## 2026-09-23 (09:00 ET — daily commit)
 
 **Landed:** Learned per-dimension quant scales (`LearnedQuantAffine`) for the IMAGE_8 bottleneck STE path.
