@@ -34,7 +34,7 @@ bits-per-pixel on the wire
 | Continuous code | Mock MLP output | Same, or VQ / residual |
 | Quantization | `quantize_uniform()` + STE + **`LearnedQuantAffine`** | Soft / residual / VQ refinements |
 | Rate proxy | FP32 bpp, `log2(L)` × dim, factorized Laplace, or **categorical** `-log2 p(index)` | Hyperprior / autoregressive entropy model |
-| Bitstream | None | ANS, arithmetic, or bits-back |
+| Bitstream | **tabled rANS** over categorical indices | Multi-speed ANS, arithmetic, bits-back |
 
 ## Uniform quantization sketch
 
@@ -115,21 +115,39 @@ exclusive with `--entropy-rate`). Combines with `--learned-quant-scales` (indice
 are on the normalized `y`-grid). Optional `--entropy-hinge` applies the same
 hinge shape as the Laplace path.
 
-This is still **not** ANS — expected discrete codelength under the categorical.
+This is still an **expected** discrete codelength under the categorical — see
+the rANS section below for an actual bitstream.
+
+## Tabled rANS bitstream (categorical indices)
+
+`ans_encode_indices` / `ans_decode_indices` implement **byte-oriented tabled
+rANS** (Fabian Giesen `ryg_rans` / `rans_byte.h` semantics) over the
+factorized categorical PMFs:
+
+1. Softmax logits → float PMF per compact dim.
+2. Quantize each PMF to integer frequencies summing to `M = 2^12`.
+3. Encode STE `indices` last→first; payload = LE 4-byte state + renorm bytes.
+4. Decode forward; round-trip must match the index vector exactly.
+
+Meta reports `measured_bits` (payload × 8) vs `expected_nll_bits` (`-log2 p`).
+Under a flat prior the gap is mostly the 4-byte state flush (~32 bits). A peaked
+prior shrinks both NLL and the bitstream together.
+
+`ans_bitstream_stats(...)` documents expected vs measured bpp. CLI:
+`bottleneck_train_sketch.py --ans-check` (implies `--categorical-rate`) runs one
+encode/decode after the sketch and prints the meta line.
 
 ## What to plug in next
 
 1. **Hyperprior** (Ballé-style) if spatial structure returns (today's code is a
    flat vector).
-2. **ANS encode/decode** only after the rate term is calibrated — bitstream
-   plumbing is orthogonal to learning the bottleneck geometry.
-3. **Wire real VAE latents** into the sketch (`MockLatentBatch` → encode).
+2. **Wire real VAE latents** into the sketch (`MockLatentBatch` → encode).
+3. Faster rANS (SIMD / multi-state) once the CPU sketch is on real latents.
 
 ## Out of scope (this note)
 
-- Shipping a real ANS encoder
 - Training an entropy model on image data
 - Diffusers / CUDA weight download
+- Production multi-speed / AVX ANS
 
-Those stay for later cadence commits once quantization + rate geometry are
-stabile in the CPU sketch.
+Those stay for later cadence commits once the CPU sketch is on real latents.

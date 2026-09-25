@@ -14,7 +14,8 @@ Rate note (illustrative FP32, no entropy coding):
   VAE flat latent 16384 floats ≈ 64 KiB; default compact code 256 floats ≈ 1 KiB.
   That is ~0.031 bpp at 512² RGB before generative decode — not a trained RD curve.
   See also quantize_uniform / straight_through_quantize / quantized_rate_stats,
-  FactorizedEntropyModel, CategoricalEntropyModel, LearnedQuantAffine, and
+  FactorizedEntropyModel, CategoricalEntropyModel, LearnedQuantAffine,
+  tabled rANS (`ans_encode_indices` / `ans_decode_indices`), and
   docs/ENTROPY-CODING-NOTES.md.
 """
 
@@ -395,6 +396,261 @@ def categorical_rate_stats(
     }
 
 
+
+# ---------------------------------------------------------------------------
+# Tabled rANS (Asymmetric Numeral Systems) — categorical STE indices
+# ---------------------------------------------------------------------------
+# Byte-oriented rANS following Fabian Giesen's ryg_rans (rans_byte.h) semantics:
+# encode symbols last→first; bitstream is LE 4-byte state + renorm bytes.
+
+ANS_SCALE_BITS = 12  # frequency table mass M = 2^scale_bits
+ANS_L = 1 << 23  # RANS_BYTE_L — lower bound of the normalization interval
+
+
+def _pmf_to_freqs(pmf: torch.Tensor, scale_bits: int = ANS_SCALE_BITS) -> torch.Tensor:
+    """
+    Map a probability simplex (..., L) to integer frequencies summing to M=2^scale_bits.
+
+    Guarantees every symbol with pmf > 0 gets at least frequency 1 when possible;
+    zeros stay zero. Rounding residue is absorbed into the largest-mass bin.
+    """
+    if scale_bits < 4 or scale_bits > 16:
+        raise ValueError("scale_bits must be in [4, 16]")
+    M = 1 << scale_bits
+    p = pmf.float().clamp(min=0.0)
+    s = p.sum(dim=-1, keepdim=True).clamp(min=1e-12)
+    p = p / s
+    raw = p * float(M)
+    freqs = raw.floor().to(torch.long)
+    positive = p > 0
+    freqs = torch.where(positive & (freqs == 0), torch.ones_like(freqs), freqs)
+    total = freqs.sum(dim=-1, keepdim=True)
+    diff = M - total.squeeze(-1)
+    L = freqs.shape[-1]
+    freqs_flat = freqs.reshape(-1, L)
+    diff_flat = diff.reshape(-1)
+    raw_flat = raw.reshape(-1, L)
+    pos_flat = positive.reshape(-1, L)
+    for i in range(freqs_flat.shape[0]):
+        d = int(diff_flat[i].item())
+        if d == 0:
+            continue
+        order = torch.argsort(raw_flat[i], descending=True)
+        if d > 0:
+            j = int(order[0].item())
+            freqs_flat[i, j] = freqs_flat[i, j] + d
+        else:
+            remain = -d
+            for j in order.tolist():
+                if remain <= 0:
+                    break
+                cur = int(freqs_flat[i, j].item())
+                min_keep = 1 if bool(pos_flat[i, j]) else 0
+                take = min(remain, max(0, cur - min_keep))
+                freqs_flat[i, j] = cur - take
+                remain -= take
+            if remain > 0:
+                for j in order.tolist():
+                    if remain <= 0:
+                        break
+                    cur = int(freqs_flat[i, j].item())
+                    take = min(remain, cur)
+                    freqs_flat[i, j] = cur - take
+                    remain -= take
+    freqs = freqs_flat.reshape(freqs.shape)
+    sums = freqs.sum(dim=-1)
+    if int(sums.min()) != M or int(sums.max()) != M:
+        raise RuntimeError("frequency table failed to sum to M")
+    return freqs
+
+
+def freqs_to_cdf(freqs: torch.Tensor) -> torch.Tensor:
+    """Exclusive prefix sums; shape (..., L+1) with cdf[..., 0]=0, cdf[..., -1]=M."""
+    zeros = torch.zeros(*freqs.shape[:-1], 1, dtype=freqs.dtype, device=freqs.device)
+    return torch.cat([zeros, freqs.cumsum(dim=-1)], dim=-1)
+
+
+def ans_encode_symbols(
+    symbols: list[int],
+    freqs_rows: list[list[int]],
+    *,
+    scale_bits: int = ANS_SCALE_BITS,
+) -> bytes:
+    """
+    Byte-oriented tabled rANS encode (last symbol encoded first).
+
+    `symbols[i]` is drawn under frequency row `freqs_rows[i]` (length L, sum M).
+    Returns a bitstream whose length approximates sum_i -log2(freq[s]/M),
+    plus a fixed 4-byte state flush.
+    """
+    M = 1 << scale_bits
+    if len(symbols) != len(freqs_rows):
+        raise ValueError("symbols and freqs_rows length mismatch")
+    renorm: list[int] = []
+    state = ANS_L
+    for i in range(len(symbols) - 1, -1, -1):
+        s = int(symbols[i])
+        freqs = freqs_rows[i]
+        if s < 0 or s >= len(freqs):
+            raise ValueError(f"symbol {s} out of range at position {i}")
+        freq = int(freqs[s])
+        if freq <= 0:
+            raise ValueError(f"symbol {s} has zero frequency at position {i}")
+        start = 0
+        for j in range(s):
+            start += int(freqs[j])
+        # ryg_rans: x_max = ((L >> scale_bits) << 8) * freq
+        x_max = ((ANS_L >> scale_bits) << 8) * freq
+        while state >= x_max:
+            renorm.append(state & 0xFF)
+            state >>= 8
+        state = ((state // freq) << scale_bits) + (state % freq) + start
+    # LE 4-byte state + renorm bytes in reverse flush order (decode-forward)
+    return int(state).to_bytes(4, "little") + bytes(reversed(renorm))
+
+
+def ans_decode_symbols(
+    payload: bytes,
+    freqs_rows: list[list[int]],
+    *,
+    scale_bits: int = ANS_SCALE_BITS,
+) -> list[int]:
+    """Inverse of `ans_encode_symbols` for the same frequency schedule."""
+    M = 1 << scale_bits
+    mask = M - 1
+    if len(payload) < 4:
+        raise ValueError("ANS payload too short")
+    state = int.from_bytes(payload[0:4], "little")
+    pos = 4
+    symbols: list[int] = []
+    for i, freqs in enumerate(freqs_rows):
+        if sum(int(f) for f in freqs) != M:
+            raise ValueError(f"freq row {i} does not sum to M")
+        cf = state & mask
+        acc = 0
+        s = start = freq = None
+        for j, f in enumerate(freqs):
+            f = int(f)
+            if acc <= cf < acc + f:
+                s, start, freq = j, acc, f
+                break
+            acc += f
+        if s is None:
+            raise ValueError(f"slot {cf} outside cdf at position {i}")
+        state = freq * (state >> scale_bits) + (state & mask) - start
+        while state < ANS_L:
+            if pos >= len(payload):
+                raise ValueError("ANS stream underrun")
+            state = (state << 8) | payload[pos]
+            pos += 1
+        symbols.append(s)
+    if pos != len(payload):
+        raise ValueError(f"ANS trailing bytes unread ({len(payload) - pos})")
+    return symbols
+
+
+def categorical_pmfs(model: "CategoricalEntropyModel") -> torch.Tensor:
+    """Softmax PMFs from a CategoricalEntropyModel: (D, L)."""
+    return torch.softmax(model.logits.detach().float(), dim=-1)
+
+
+def ans_encode_indices(
+    indices: torch.Tensor,
+    model: "CategoricalEntropyModel",
+    *,
+    scale_bits: int = ANS_SCALE_BITS,
+) -> tuple[bytes, dict]:
+    """
+    Encode a single compact-code index vector under the model's factorized prior.
+
+    `indices` shaped (D,) long. Builds per-dim frequency tables from the
+    categorical PMFs, then tabled rANS. Returns (payload, meta) where meta
+    includes expected NLL bits and measured bitstream bits.
+    """
+    if indices.ndim != 1:
+        raise ValueError("ans_encode_indices expects a 1-D index vector (D,)")
+    if indices.shape[0] != model.compact_dim:
+        raise ValueError(
+            f"indices length {indices.shape[0]} != compact_dim {model.compact_dim}"
+        )
+    pmf = categorical_pmfs(model)  # (D, L)
+    freqs = _pmf_to_freqs(pmf, scale_bits=scale_bits)  # (D, L)
+    idx = indices.long().clamp(0, model.levels - 1).tolist()
+    freqs_rows = [[int(x) for x in row] for row in freqs.tolist()]
+    payload = ans_encode_symbols(idx, freqs_rows, scale_bits=scale_bits)
+    with torch.no_grad():
+        expected_bits = float(model.total_bits(indices.long()).cpu())
+    measured_bits = len(payload) * 8.0
+    meta = {
+        "scale_bits": scale_bits,
+        "compact_dim": model.compact_dim,
+        "levels": model.levels,
+        "payload_bytes": len(payload),
+        "measured_bits": measured_bits,
+        "expected_nll_bits": expected_bits,
+        "overhead_bits": measured_bits - expected_bits,
+        "note": "tabled rANS (ryg_rans byte) over factorized categorical PMFs",
+    }
+    return payload, meta
+
+
+def ans_decode_indices(
+    payload: bytes,
+    model: "CategoricalEntropyModel",
+    *,
+    scale_bits: int = ANS_SCALE_BITS,
+) -> torch.Tensor:
+    """Decode payload produced by `ans_encode_indices` with the same model PMFs."""
+    pmf = categorical_pmfs(model)
+    freqs = _pmf_to_freqs(pmf, scale_bits=scale_bits)
+    freqs_rows = [[int(x) for x in row] for row in freqs.tolist()]
+    symbols = ans_decode_symbols(payload, freqs_rows, scale_bits=scale_bits)
+    if len(symbols) != model.compact_dim:
+        raise ValueError(
+            f"decoded length {len(symbols)} != compact_dim {model.compact_dim}"
+        )
+    return torch.tensor(symbols, dtype=torch.long)
+
+
+def ans_bitstream_stats(
+    compact_dim: int = 256,
+    levels: int = 256,
+    image_side: int = 512,
+    *,
+    measured_bits: Optional[float] = None,
+    expected_nll_bits: Optional[float] = None,
+) -> dict:
+    """
+    Illustrative bpp for an ANS payload vs categorical NLL.
+
+    When measured/expected are omitted, reports the uniform-init categorical
+    expected cost (same as categorical_rate_stats) and notes that measured
+    bitstream length is only available after `ans_encode_indices`.
+    """
+    cat = categorical_rate_stats(
+        compact_dim=compact_dim, levels=levels, image_side=image_side
+    )
+    pixels = float(image_side * image_side)
+    if expected_nll_bits is None:
+        expected_nll_bits = float(cat["total_bits"])
+    expected_bpp = expected_nll_bits / pixels
+    out = {
+        "compact_dim": compact_dim,
+        "levels": levels,
+        "image_side": image_side,
+        "expected_nll_bits": expected_nll_bits,
+        "expected_bits_per_pixel": expected_bpp,
+        "fp32_bits_per_pixel": cat["fp32_bits_per_pixel"],
+        "uniform_bits_per_pixel": cat["uniform_bits_per_pixel"],
+        "note": "ANS measured bits fill in after ans_encode_indices; expected is -log2 p",
+    }
+    if measured_bits is not None:
+        out["measured_bits"] = float(measured_bits)
+        out["measured_bits_per_pixel"] = float(measured_bits) / pixels
+        out["overhead_bits"] = float(measured_bits) - expected_nll_bits
+    return out
+
+
 class LearnedQuantAffine(nn.Module):
     """
     Per-dimension learned affine before uniform STE quantization.
@@ -528,6 +784,12 @@ class GenerativeCompressionCodec:
     def describe_categorical_rate(self, levels: int = 256, image_side: int = 512) -> dict:
         """Untrained-init factorized categorical bpp sketch (uniform over `levels`)."""
         return categorical_rate_stats(
+            compact_dim=self.compact_dim, levels=levels, image_side=image_side
+        )
+
+    def describe_ans_rate(self, levels: int = 256, image_side: int = 512) -> dict:
+        """Expected categorical NLL bpp sketch (ANS measured bits need encode)."""
+        return ans_bitstream_stats(
             compact_dim=self.compact_dim, levels=levels, image_side=image_side
         )
 
@@ -669,6 +931,10 @@ def main() -> None:
     print(
         f"Rate (categorical {args.quant_levels}-level init sketch): "
         f"{codec.describe_categorical_rate(levels=args.quant_levels)}"
+    )
+    print(
+        f"Rate (ANS expected-NLL sketch @ L={args.quant_levels}): "
+        f"{codec.describe_ans_rate(levels=args.quant_levels)}"
     )
     compact_code = codec.encode(input_image)
     print(f"\n[Data stream: compact vector {tuple(compact_code.shape)} floats]")

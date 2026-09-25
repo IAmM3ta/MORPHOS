@@ -352,3 +352,49 @@ def test_categorical_and_entropy_mutually_exclusive():
         assert False, "expected ValueError"
     except ValueError:
         pass
+
+
+
+def test_ans_check_one_code_roundtrip():
+    import torch
+    from generative_codec import CategoricalEntropyModel
+    from bottleneck_train_sketch import (
+        MockLatentBatch,
+        ans_check_one_code,
+        make_bottleneck_pair,
+        train_step,
+    )
+
+    torch.manual_seed(0)
+    compact_dim = 32
+    levels = 16
+    compression, decompression = make_bottleneck_pair(compact_dim=compact_dim, hidden=64)
+    cat = CategoricalEntropyModel(compact_dim, levels=levels)
+    params = (
+        list(compression.parameters())
+        + list(decompression.parameters())
+        + list(cat.parameters())
+    )
+    opt = torch.optim.Adam(params, lr=1e-3)
+    batch = MockLatentBatch(batch_size=2, flat_dim=compression[0].in_features).sample()
+    # flatten dim must match FLAT_DIM for make_bottleneck_pair default
+    from generative_codec import GenerativeCompressionCodec
+
+    batch = torch.randn(2, GenerativeCompressionCodec.FLAT_DIM)
+    train_step(
+        compression,
+        decompression,
+        opt,
+        batch,
+        compact_dim,
+        use_ste_quant=True,
+        quant_levels=levels,
+        use_categorical_rate=True,
+        categorical_model=cat,
+    )
+    meta = ans_check_one_code(
+        compression, batch, quant_levels=levels, categorical_model=cat
+    )
+    assert meta["roundtrip_ok"] is True
+    assert meta["payload_bytes"] >= 4
+    assert meta["measured_bits"] >= meta["expected_nll_bits"]

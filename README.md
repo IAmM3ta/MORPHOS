@@ -34,10 +34,10 @@ flowchart LR
 | SD 1.5 VAE + UNet | Real (pretrained) | Diffusers `runwayml/stable-diffusion-v1-5` |
 | Compression / decompression MLPs | **Untrained mocks** | Shape demo only — train end-to-end in production |
 | Decode path | VAE → img2img | Avoids incorrect `latents=` text2img shortcuts |
-| Rate–distortion | Illustrative only | `rate_stats()` FP32 + `quantized_rate_stats()` / STE (+ **`LearnedQuantAffine`**) + factorized Laplace + **categorical** `-log2 p(index)`; see [ENTROPY-CODING-NOTES.md](./docs/ENTROPY-CODING-NOTES.md) |
-| Bottleneck train sketch | CPU dry-run + STE + learned scales + entropy + categorical | [`bottleneck_train_sketch.py`](./bottleneck_train_sketch.py) (`--ste-quant`, `--learned-quant-scales`, `--entropy-rate`, `--categorical-rate`) + [docs/TRAINING-SKETCH.md](./docs/TRAINING-SKETCH.md) |
+| Rate–distortion | Illustrative only | `rate_stats()` FP32 + `quantized_rate_stats()` / STE (+ **`LearnedQuantAffine`**) + factorized Laplace + **categorical** `-log2 p(index)` + **tabled rANS** bitstream; see [ENTROPY-CODING-NOTES.md](./docs/ENTROPY-CODING-NOTES.md) |
+| Bottleneck train sketch | CPU dry-run + STE + learned scales + entropy + categorical + ANS check | [`bottleneck_train_sketch.py`](./bottleneck_train_sketch.py) (`--ste-quant`, `--learned-quant-scales`, `--entropy-rate`, `--categorical-rate`, `--ans-check`) + [docs/TRAINING-SKETCH.md](./docs/TRAINING-SKETCH.md) |
 
-Default illustrative rate at 512²: **256×4 B = 1024 B** → **~0.031 bpp** before generative decode (not a trained RD curve). Uniform 8-bit symbols on the same dim sketch **~0.0078 bpp**. Factorized Laplace (`--entropy-rate`) and categorical-over-STE-indices (`--categorical-rate`) are differentiable rate proxies — still not ANS. `--learned-quant-scales` adapts per-dim STE ranges.
+Default illustrative rate at 512²: **256×4 B = 1024 B** → **~0.031 bpp** before generative decode (not a trained RD curve). Uniform 8-bit symbols on the same dim sketch **~0.0078 bpp**. Factorized Laplace (`--entropy-rate`) and categorical-over-STE-indices (`--categorical-rate`) are differentiable rate proxies; `--ans-check` adds a tabled rANS bitstream round-trip under those categorical PMFs. `--learned-quant-scales` adapts per-dim STE ranges.
 
 ## Quick start (codec)
 
@@ -65,6 +65,7 @@ PYTHONPATH=. python bottleneck_train_sketch.py --steps 8 --ste-quant --quant-lev
 PYTHONPATH=. python bottleneck_train_sketch.py --steps 8 --learned-quant-scales
 PYTHONPATH=. python bottleneck_train_sketch.py --steps 8 --entropy-rate
 PYTHONPATH=. python bottleneck_train_sketch.py --steps 8 --categorical-rate
+PYTHONPATH=. python bottleneck_train_sketch.py --steps 8 --ans-check
 PYTHONPATH=. pytest tests/test_train_sketch.py -q
 ```
 
@@ -103,6 +104,7 @@ MORPHOS under RedBot ops. Daily commits refine architecture, docs, and eval harn
 
 ### Changelog
 
+- **2026-09-25 (09:00 ET)** — Tabled rANS encode/decode over categorical STE indices (`ans_encode_indices` / `--ans-check`), tests + entropy/training docs; [STATUS.md](STATUS.md).
 - **2026-09-24 (09:00 ET)** — Discrete categorical prior over STE indices (`CategoricalEntropyModel` / `categorical_rate_stats`), train-sketch `--categorical-rate`, tests + entropy/training docs; [STATUS.md](STATUS.md).
 - **2026-09-23 (09:00 ET)** — Learned per-dim quant scales (`LearnedQuantAffine`), train-sketch `--learned-quant-scales`, tests + entropy/training docs; [STATUS.md](STATUS.md).
 - **2026-09-22 (09:00 ET)** — Factorized Laplace entropy model (`FactorizedEntropyModel` / `factorized_rate_stats`), train-sketch `--entropy-rate` (+ optional `--entropy-hinge`), tests + entropy/training docs; [STATUS.md](STATUS.md).

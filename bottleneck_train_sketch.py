@@ -11,7 +11,8 @@ diffusion prior stay frozen. This module is a *shape-faithful sketch*:
     STE quantization (optional per-dim `LearnedQuantAffine` scales), a
     differentiable factorized Laplace prior via `--entropy-rate`, or a
     discrete factorized categorical prior over STE indices via
-    `--categorical-rate` (still not ANS / bitstream plumbing)
+    `--categorical-rate`, plus optional tabled rANS bitstream check via
+    `--ans-check` (encode/decode STE indices under the categorical PMFs)
 
 Swap `MockLatentBatch` for real `vae.encode(...).latent_dist.sample()` and
 attach a perceptual / diffusion-aware reconstruction loss when moving off the
@@ -33,6 +34,8 @@ from generative_codec import (
     FactorizedEntropyModel,
     GenerativeCompressionCodec,
     LearnedQuantAffine,
+    ans_decode_indices,
+    ans_encode_indices,
     categorical_rate_stats,
     factorized_rate_stats,
     quantized_rate_stats,
@@ -433,6 +436,40 @@ def run_sketch_epochs(
         )
         history.append(metrics)
     return history
+
+
+
+def ans_check_one_code(
+    compression: nn.Module,
+    batch_flat: torch.Tensor,
+    *,
+    quant_levels: int = 256,
+    learned_quant: Optional[LearnedQuantAffine] = None,
+    categorical_model: Optional[CategoricalEntropyModel] = None,
+) -> dict:
+    """
+    Encode one STE index vector with tabled rANS under the categorical prior.
+
+    Uses the first row of `batch_flat`. Requires a CategoricalEntropyModel (same
+    geometry as `--categorical-rate`). Returns encode meta plus a round-trip OK flag.
+    """
+    if categorical_model is None:
+        raise ValueError("categorical_model required for ans_check_one_code")
+    compression.eval()
+    with torch.no_grad():
+        code = compression(batch_flat[:1])
+        if learned_quant is not None:
+            _, qmeta = learned_quant.ste_quantize(code, levels=quant_levels)
+        else:
+            _, qmeta = straight_through_quantize(
+                code, levels=quant_levels, code_min=-1.0, code_max=1.0
+            )
+        indices = qmeta["indices"].reshape(-1)
+        payload, meta = ans_encode_indices(indices, categorical_model)
+        decoded = ans_decode_indices(payload, categorical_model)
+        meta = dict(meta)
+        meta["roundtrip_ok"] = bool(torch.equal(decoded, indices.long().cpu()))
+    return meta
 
 
 # ---------------------------------------------------------------------------

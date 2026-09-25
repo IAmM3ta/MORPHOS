@@ -2,6 +2,19 @@
 
 RedBot daily cadence notes for `IAmM3ta/MORPHOS`. Newest first.
 
+## 2026-09-25 (09:00 ET — daily commit)
+
+**Landed:** Tabled rANS encode/decode over categorical STE indices for the IMAGE_8 bottleneck (bitstream after NLL).
+
+- Added byte-oriented rANS (`ans_encode_symbols` / `ans_decode_symbols`, ryg_rans semantics) plus `ans_encode_indices` / `ans_decode_indices` / `ans_bitstream_stats` in `generative_codec.py`.
+- PMF→frequency tables (`_pmf_to_freqs`, `M=2^12`); measured bitstream bits vs categorical `-log2 p`.
+- Wired `--ans-check` into `bottleneck_train_sketch` (implies `--categorical-rate`); round-trip demo after the sketch.
+- Extended shape + train-sketch tests; updated `docs/ENTROPY-CODING-NOTES.md` and `docs/TRAINING-SKETCH.md`; README Changelog.
+
+**Reviewed:** CategoricalEntropyModel + LearnedQuantAffine + factorized Laplace paths from 2026-09-22–24 remain intact. Morphogen v2 / red-team brief unchanged this pass.
+
+**Next focus candidates:** hyperprior notes (if spatial structure returns), wire real VAE latents into the sketch, Morphogen Sync auth hello hardening.
+
 ## 2026-09-24 (09:00 ET — daily commit)
 
 **Landed:** Discrete factorized categorical prior over STE indices (`CategoricalEntropyModel`) for the IMAGE_8 bottleneck rate path.

@@ -259,3 +259,69 @@ def test_categorical_entropy_rejects_bad_args():
         assert False, "expected ValueError"
     except ValueError:
         pass
+
+
+
+def test_pmf_to_freqs_sums_to_M():
+    from generative_codec import CategoricalEntropyModel, _pmf_to_freqs, categorical_pmfs, ANS_SCALE_BITS
+
+    model = CategoricalEntropyModel(8, levels=16)
+    freqs = _pmf_to_freqs(categorical_pmfs(model))
+    assert freqs.shape == (8, 16)
+    assert int(freqs.sum(dim=-1).min()) == (1 << ANS_SCALE_BITS)
+    assert int(freqs.sum(dim=-1).max()) == (1 << ANS_SCALE_BITS)
+
+
+def test_ans_roundtrip_uniform_and_peaked():
+    import torch
+    from generative_codec import CategoricalEntropyModel, ans_encode_indices, ans_decode_indices
+
+    torch.manual_seed(0)
+    model = CategoricalEntropyModel(64, levels=32)
+    idx = torch.randint(0, 32, (64,))
+    payload, meta = ans_encode_indices(idx, model)
+    assert torch.equal(ans_decode_indices(payload, model), idx)
+    assert meta["payload_bytes"] == len(payload)
+    assert meta["measured_bits"] == len(payload) * 8
+    # Uniform prior → expected ≈ 64 * log2(32) = 320 bits; overhead is small state flush
+    assert abs(meta["expected_nll_bits"] - 320.0) < 1e-4
+    assert meta["overhead_bits"] < 64  # 4-byte state + byte alignment
+
+    peaked = CategoricalEntropyModel(64, levels=32)
+    with torch.no_grad():
+        peaked.logits.zero_()
+        peaked.logits[:, 7] = 6.0
+    idx_p = torch.full((64,), 7, dtype=torch.long)
+    payload_p, meta_p = ans_encode_indices(idx_p, peaked)
+    assert torch.equal(ans_decode_indices(payload_p, peaked), idx_p)
+    # Peaked prior should beat uniform bitstream by a wide margin
+    assert meta_p["payload_bytes"] < meta["payload_bytes"]
+    assert meta_p["expected_nll_bits"] < meta["expected_nll_bits"]
+
+
+def test_ans_bitstream_stats_with_measurement():
+    from generative_codec import ans_bitstream_stats, categorical_rate_stats
+
+    base = categorical_rate_stats(compact_dim=256, levels=256, image_side=512)
+    s = ans_bitstream_stats(
+        compact_dim=256,
+        levels=256,
+        image_side=512,
+        measured_bits=2080.0,
+        expected_nll_bits=base["total_bits"],
+    )
+    assert abs(s["expected_bits_per_pixel"] - base["bits_per_pixel"]) < 1e-12
+    assert abs(s["measured_bits_per_pixel"] - 2080.0 / (512 * 512)) < 1e-12
+    assert abs(s["overhead_bits"] - (2080.0 - base["total_bits"])) < 1e-9
+
+
+def test_ans_rejects_bad_index_rank():
+    import torch
+    from generative_codec import CategoricalEntropyModel, ans_encode_indices
+
+    model = CategoricalEntropyModel(4, levels=8)
+    try:
+        ans_encode_indices(torch.zeros(2, 4, dtype=torch.long), model)
+        assert False, "expected ValueError"
+    except ValueError:
+        pass
