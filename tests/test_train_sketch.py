@@ -398,3 +398,46 @@ def test_ans_check_one_code_roundtrip():
     assert meta["roundtrip_ok"] is True
     assert meta["payload_bytes"] >= 4
     assert meta["measured_bits"] >= meta["expected_nll_bits"]
+
+
+def test_ans_check_one_code_pack_roundtrip():
+    import torch
+    from generative_codec import CategoricalEntropyModel, GenerativeCompressionCodec
+    from bottleneck_train_sketch import ans_check_one_code, make_bottleneck_pair, train_step
+
+    torch.manual_seed(0)
+    compact_dim = 32
+    levels = 16
+    compression, decompression = make_bottleneck_pair(compact_dim=compact_dim, hidden=64)
+    cat = CategoricalEntropyModel(compact_dim, levels=levels)
+    params = (
+        list(compression.parameters())
+        + list(decompression.parameters())
+        + list(cat.parameters())
+    )
+    opt = torch.optim.Adam(params, lr=1e-3)
+    batch = torch.randn(2, GenerativeCompressionCodec.FLAT_DIM)
+    train_step(
+        compression,
+        decompression,
+        opt,
+        batch,
+        compact_dim,
+        use_ste_quant=True,
+        quant_levels=levels,
+        use_categorical_rate=True,
+        categorical_model=cat,
+    )
+    meta = ans_check_one_code(
+        compression,
+        batch,
+        quant_levels=levels,
+        categorical_model=cat,
+        use_pack=True,
+    )
+    assert meta["used_pack"] is True
+    assert meta["roundtrip_ok"] is True
+    assert meta["sideinfo_mode"] in ("shared", "per_dim")
+    assert meta["pack_bytes"] >= meta["payload_bytes"]
+    assert meta["measured_pack_bits"] >= meta["measured_bits"]
+

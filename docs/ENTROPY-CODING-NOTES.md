@@ -34,7 +34,7 @@ bits-per-pixel on the wire
 | Continuous code | Mock MLP output | Same, or VQ / residual |
 | Quantization | `quantize_uniform()` + STE + **`LearnedQuantAffine`** | Soft / residual / VQ refinements |
 | Rate proxy | FP32 bpp, `log2(L)` × dim, factorized Laplace, or **categorical** `-log2 p(index)` | Hyperprior / autoregressive entropy model |
-| Bitstream | **tabled rANS** over categorical indices | Multi-speed ANS, arithmetic, bits-back |
+| Bitstream | **tabled rANS** + **self-describing pack** (freq side-info) | Multi-speed ANS, arithmetic, bits-back, hyperprior tables |
 
 ## Uniform quantization sketch
 
@@ -137,10 +137,27 @@ prior shrinks both NLL and the bitstream together.
 `bottleneck_train_sketch.py --ans-check` (implies `--categorical-rate`) runs one
 encode/decode after the sketch and prints the meta line.
 
+## Self-describing ANS pack (freq side-info)
+
+`ans_pack_indices` / `ans_unpack_indices` wrap the rANS payload so decode does
+**not** need a live `CategoricalEntropyModel`:
+
+```text
+MRPH | ver | scale_bits | D | L | mode | freqs… | payload_len | payload
+```
+
+- `mode=shared` when every dim shares one frequency row (uniform init, or a
+  fully tied prior) — side-info is one `L × u16` table.
+- `mode=per_dim` otherwise — `D × L × u16` tables travel with the bitstream.
+- Meta reports `sideinfo_bytes`, `payload_bytes`, `measured_pack_bits`.
+
+Honest rate = payload + side-info. A hyperprior later replaces raw freq tables
+with a cheap latent. CLI: `--ans-pack` (implies `--ans-check`).
+
 ## What to plug in next
 
-1. **Hyperprior** (Ballé-style) if spatial structure returns (today's code is a
-   flat vector).
+1. **Hyperprior** (Ballé-style) to shrink / replace pack side-info if spatial
+   structure returns (today's code is a flat vector).
 2. **Wire real VAE latents** into the sketch (`MockLatentBatch` → encode).
 3. Faster rANS (SIMD / multi-state) once the CPU sketch is on real latents.
 

@@ -15,7 +15,8 @@ Rate note (illustrative FP32, no entropy coding):
   That is ~0.031 bpp at 512² RGB before generative decode — not a trained RD curve.
   See also quantize_uniform / straight_through_quantize / quantized_rate_stats,
   FactorizedEntropyModel, CategoricalEntropyModel, LearnedQuantAffine,
-  tabled rANS (`ans_encode_indices` / `ans_decode_indices`), and
+  tabled rANS (`ans_encode_indices` / `ans_decode_indices`),
+  self-describing ANS packs (`ans_pack_indices` / `ans_unpack_indices`), and
   docs/ENTROPY-CODING-NOTES.md.
 """
 
@@ -651,6 +652,212 @@ def ans_bitstream_stats(
     return out
 
 
+
+# ---------------------------------------------------------------------------
+# Self-describing ANS pack (freq side-info + rANS payload)
+# ---------------------------------------------------------------------------
+# Wire format v1 (little-endian):
+#   magic[4]="MRPH" | version u8=1 | scale_bits u8
+#   compact_dim u16 | levels u16 | sideinfo_mode u8
+#     0 = shared freqs (one row, identical across dims)
+#     1 = per-dim freqs (D rows)
+#   freqs: (1 or D) × L × u16
+#   payload_len u32 | payload bytes
+#
+# Decode needs only the pack — not a live CategoricalEntropyModel. Side-info
+# is paid bits on the wire (honest rate); production would replace raw tables
+# with a hyperprior / shared codebook.
+
+ANS_PACK_MAGIC = b"MRPH"
+ANS_PACK_VERSION = 1
+ANS_SIDEINFO_SHARED = 0
+ANS_SIDEINFO_PER_DIM = 1
+
+
+def _freqs_rows_identical(freqs: torch.Tensor) -> bool:
+    """True when every compact-dim frequency row equals the first."""
+    if freqs.ndim != 2 or freqs.shape[0] < 1:
+        return False
+    return bool(torch.all(freqs == freqs[0:1]).item())
+
+
+def _pack_freq_rows(freqs_rows: list[list[int]]) -> bytes:
+    """Serialize frequency rows as little-endian uint16 (values fit in 2^scale_bits ≤ 2^16)."""
+    out = bytearray()
+    for row in freqs_rows:
+        for f in row:
+            fi = int(f)
+            if fi < 0 or fi > 0xFFFF:
+                raise ValueError(f"frequency {fi} out of uint16 range")
+            out.extend(fi.to_bytes(2, "little"))
+    return bytes(out)
+
+
+def _unpack_freq_rows(blob: bytes, n_rows: int, levels: int) -> list[list[int]]:
+    need = n_rows * levels * 2
+    if len(blob) < need:
+        raise ValueError("frequency side-info truncated")
+    rows: list[list[int]] = []
+    pos = 0
+    for _ in range(n_rows):
+        row = []
+        for _ in range(levels):
+            row.append(int.from_bytes(blob[pos : pos + 2], "little"))
+            pos += 2
+        rows.append(row)
+    return rows
+
+
+def ans_pack_indices(
+    indices: torch.Tensor,
+    model: "CategoricalEntropyModel",
+    *,
+    scale_bits: int = ANS_SCALE_BITS,
+) -> tuple[bytes, dict]:
+    """
+    Self-describing ANS bitstream: embedded frequency side-info + rANS payload.
+
+    Encode STE indices under the model's factorized PMFs, then wrap the payload
+    so a decoder can recover indices without the live logits. Meta reports
+    payload bits, side-info bytes, and total measured wire bits.
+    """
+    payload, enc_meta = ans_encode_indices(indices, model, scale_bits=scale_bits)
+    pmf = categorical_pmfs(model)
+    freqs = _pmf_to_freqs(pmf, scale_bits=scale_bits)
+    shared = _freqs_rows_identical(freqs)
+    if shared:
+        mode = ANS_SIDEINFO_SHARED
+        freqs_rows = [[int(x) for x in freqs[0].tolist()]]
+    else:
+        mode = ANS_SIDEINFO_PER_DIM
+        freqs_rows = [[int(x) for x in row] for row in freqs.tolist()]
+    freq_blob = _pack_freq_rows(freqs_rows)
+    header = bytearray()
+    header.extend(ANS_PACK_MAGIC)
+    header.append(ANS_PACK_VERSION)
+    header.append(int(scale_bits))
+    header.extend(int(model.compact_dim).to_bytes(2, "little"))
+    header.extend(int(model.levels).to_bytes(2, "little"))
+    header.append(mode)
+    header.extend(freq_blob)
+    header.extend(len(payload).to_bytes(4, "little"))
+    packed = bytes(header) + payload
+    sideinfo_bytes = len(packed) - len(payload)
+    meta = dict(enc_meta)
+    meta.update(
+        {
+            "pack_version": ANS_PACK_VERSION,
+            "sideinfo_mode": "shared" if shared else "per_dim",
+            "sideinfo_bytes": sideinfo_bytes,
+            "pack_bytes": len(packed),
+            "measured_pack_bits": len(packed) * 8.0,
+            "payload_bytes": len(payload),
+            "note": "self-describing ANS pack (freq side-info + ryg_rans payload)",
+        }
+    )
+    return packed, meta
+
+
+def ans_unpack_indices(packed: bytes) -> tuple[torch.Tensor, dict]:
+    """
+    Decode a pack from `ans_pack_indices` without a CategoricalEntropyModel.
+
+    Returns (indices long (D,), meta) including geometry and side-info mode.
+    """
+    if len(packed) < 4 + 1 + 1 + 2 + 2 + 1 + 4:
+        raise ValueError("ANS pack too short")
+    if packed[0:4] != ANS_PACK_MAGIC:
+        raise ValueError(f"bad ANS pack magic {packed[0:4]!r}")
+    version = packed[4]
+    if version != ANS_PACK_VERSION:
+        raise ValueError(f"unsupported ANS pack version {version}")
+    scale_bits = packed[5]
+    compact_dim = int.from_bytes(packed[6:8], "little")
+    levels = int.from_bytes(packed[8:10], "little")
+    mode = packed[10]
+    pos = 11
+    if mode == ANS_SIDEINFO_SHARED:
+        n_rows = 1
+    elif mode == ANS_SIDEINFO_PER_DIM:
+        n_rows = compact_dim
+    else:
+        raise ValueError(f"unknown sideinfo_mode {mode}")
+    need = n_rows * levels * 2
+    freq_blob = packed[pos : pos + need]
+    if len(freq_blob) < need:
+        raise ValueError("frequency side-info truncated")
+    pos += need
+    if pos + 4 > len(packed):
+        raise ValueError("ANS pack missing payload length")
+    payload_len = int.from_bytes(packed[pos : pos + 4], "little")
+    pos += 4
+    payload = packed[pos : pos + payload_len]
+    if len(payload) != payload_len:
+        raise ValueError("ANS pack payload truncated")
+    if pos + payload_len != len(packed):
+        raise ValueError("ANS pack has trailing junk")
+    freqs_one = _unpack_freq_rows(freq_blob, n_rows, levels)
+    if mode == ANS_SIDEINFO_SHARED:
+        freqs_rows = [list(freqs_one[0]) for _ in range(compact_dim)]
+    else:
+        freqs_rows = freqs_one
+    symbols = ans_decode_symbols(payload, freqs_rows, scale_bits=scale_bits)
+    if len(symbols) != compact_dim:
+        raise ValueError(f"decoded length {len(symbols)} != compact_dim {compact_dim}")
+    indices = torch.tensor(symbols, dtype=torch.long)
+    meta = {
+        "pack_version": version,
+        "scale_bits": scale_bits,
+        "compact_dim": compact_dim,
+        "levels": levels,
+        "sideinfo_mode": "shared" if mode == ANS_SIDEINFO_SHARED else "per_dim",
+        "sideinfo_bytes": pos - payload_len,  # header through payload_len field
+        "payload_bytes": payload_len,
+        "pack_bytes": len(packed),
+        "measured_pack_bits": len(packed) * 8.0,
+    }
+    # Correct sideinfo: everything except payload
+    meta["sideinfo_bytes"] = len(packed) - payload_len
+    return indices, meta
+
+
+def ans_pack_stats(
+    compact_dim: int = 256,
+    levels: int = 256,
+    image_side: int = 512,
+    *,
+    measured_pack_bits: Optional[float] = None,
+    payload_bits: Optional[float] = None,
+    sideinfo_bytes: Optional[int] = None,
+    sideinfo_mode: str = "shared",
+) -> dict:
+    """
+    Illustrative bpp for a self-describing ANS pack (payload + freq side-info).
+
+    Without measurements, reports categorical expected NLL and notes that
+    side-info size depends on shared vs per-dim tables after `ans_pack_indices`.
+    """
+    base = ans_bitstream_stats(
+        compact_dim=compact_dim,
+        levels=levels,
+        image_side=image_side,
+        measured_bits=payload_bits,
+    )
+    pixels = float(image_side * image_side)
+    out = dict(base)
+    out["sideinfo_mode"] = sideinfo_mode
+    out["note"] = (
+        "ANS pack = freq side-info + rANS payload; measured_pack_bits after ans_pack_indices"
+    )
+    if sideinfo_bytes is not None:
+        out["sideinfo_bytes"] = int(sideinfo_bytes)
+        out["sideinfo_bits"] = float(sideinfo_bytes) * 8.0
+    if measured_pack_bits is not None:
+        out["measured_pack_bits"] = float(measured_pack_bits)
+        out["measured_pack_bits_per_pixel"] = float(measured_pack_bits) / pixels
+    return out
+
+
 class LearnedQuantAffine(nn.Module):
     """
     Per-dimension learned affine before uniform STE quantization.
@@ -790,6 +997,12 @@ class GenerativeCompressionCodec:
     def describe_ans_rate(self, levels: int = 256, image_side: int = 512) -> dict:
         """Expected categorical NLL bpp sketch (ANS measured bits need encode)."""
         return ans_bitstream_stats(
+            compact_dim=self.compact_dim, levels=levels, image_side=image_side
+        )
+
+    def describe_ans_pack_rate(self, levels: int = 256, image_side: int = 512) -> dict:
+        """Expected NLL + pack side-info note (measured pack bits need ans_pack_indices)."""
+        return ans_pack_stats(
             compact_dim=self.compact_dim, levels=levels, image_side=image_side
         )
 
@@ -935,6 +1148,10 @@ def main() -> None:
     print(
         f"Rate (ANS expected-NLL sketch @ L={args.quant_levels}): "
         f"{codec.describe_ans_rate(levels=args.quant_levels)}"
+    )
+    print(
+        f"Rate (ANS pack sketch @ L={args.quant_levels}): "
+        f"{codec.describe_ans_pack_rate(levels=args.quant_levels)}"
     )
     compact_code = codec.encode(input_image)
     print(f"\n[Data stream: compact vector {tuple(compact_code.shape)} floats]")

@@ -325,3 +325,69 @@ def test_ans_rejects_bad_index_rank():
         assert False, "expected ValueError"
     except ValueError:
         pass
+
+
+def test_ans_pack_roundtrip_shared_and_per_dim():
+    import torch
+    from generative_codec import (
+        CategoricalEntropyModel,
+        ans_pack_indices,
+        ans_unpack_indices,
+    )
+
+    torch.manual_seed(1)
+    # Uniform init → shared frequency row (side-info collapses)
+    model = CategoricalEntropyModel(48, levels=16)
+    idx = torch.randint(0, 16, (48,))
+    packed, meta = ans_pack_indices(idx, model)
+    assert meta["sideinfo_mode"] == "shared"
+    assert meta["pack_bytes"] == len(packed)
+    assert meta["sideinfo_bytes"] < meta["pack_bytes"]
+    decoded, umeta = ans_unpack_indices(packed)
+    assert torch.equal(decoded, idx)
+    assert umeta["sideinfo_mode"] == "shared"
+    assert umeta["compact_dim"] == 48
+    assert umeta["levels"] == 16
+
+    # Peaked / non-identical rows → per-dim side-info
+    peaked = CategoricalEntropyModel(48, levels=16)
+    with torch.no_grad():
+        peaked.logits.zero_()
+        for d in range(48):
+            peaked.logits[d, d % 16] = 5.0
+    idx_p = torch.tensor([d % 16 for d in range(48)], dtype=torch.long)
+    packed_p, meta_p = ans_pack_indices(idx_p, peaked)
+    assert meta_p["sideinfo_mode"] == "per_dim"
+    assert meta_p["sideinfo_bytes"] > meta["sideinfo_bytes"]
+    decoded_p, umeta_p = ans_unpack_indices(packed_p)
+    assert torch.equal(decoded_p, idx_p)
+    assert umeta_p["sideinfo_mode"] == "per_dim"
+
+
+def test_ans_pack_stats_with_measurement():
+    from generative_codec import ans_pack_stats
+
+    s = ans_pack_stats(
+        compact_dim=256,
+        levels=256,
+        image_side=512,
+        measured_pack_bits=4096.0,
+        payload_bits=2048.0,
+        sideinfo_bytes=128,
+        sideinfo_mode="shared",
+    )
+    assert s["sideinfo_mode"] == "shared"
+    assert s["sideinfo_bytes"] == 128
+    assert abs(s["sideinfo_bits"] - 1024.0) < 1e-9
+    assert abs(s["measured_pack_bits_per_pixel"] - 4096.0 / (512 * 512)) < 1e-12
+
+
+def test_ans_pack_rejects_bad_magic():
+    from generative_codec import ans_unpack_indices
+
+    try:
+        ans_unpack_indices(b"XXXX" + b"\x00" * 20)
+        assert False, "expected ValueError"
+    except ValueError:
+        pass
+

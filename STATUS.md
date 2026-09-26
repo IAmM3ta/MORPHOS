@@ -2,6 +2,19 @@
 
 RedBot daily cadence notes for `IAmM3ta/MORPHOS`. Newest first.
 
+## 2026-09-26 (09:00 ET — daily commit)
+
+**Landed:** Self-describing ANS pack (freq side-info + rANS payload) for the IMAGE_8 bottleneck bitstream.
+
+- Added `ans_pack_indices` / `ans_unpack_indices` / `ans_pack_stats` in `generative_codec.py` (MRPH v1 wire format; shared vs per-dim frequency tables).
+- Decode no longer needs a live `CategoricalEntropyModel` — tables travel with the pack; meta reports side-info vs payload bits.
+- Wired `--ans-check` and `--ans-pack` into `bottleneck_train_sketch` CLI (pack implies check; both imply `--categorical-rate`).
+- Extended shape + train-sketch tests; updated `docs/ENTROPY-CODING-NOTES.md` and `docs/TRAINING-SKETCH.md`; README Changelog.
+
+**Reviewed:** Tabled rANS + CategoricalEntropyModel + LearnedQuantAffine paths from 2026-09-23–25 remain intact. Morphogen v2 / red-team brief unchanged this pass.
+
+**Next focus candidates:** hyperprior notes (replace raw freq side-info), wire real VAE latents into the sketch, Morphogen Sync auth hello hardening.
+
 ## 2026-09-25 (09:00 ET — daily commit)
 
 **Landed:** Tabled rANS encode/decode over categorical STE indices for the IMAGE_8 bottleneck (bitstream after NLL).

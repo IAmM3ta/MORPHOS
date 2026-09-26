@@ -12,7 +12,8 @@ diffusion prior stay frozen. This module is a *shape-faithful sketch*:
     differentiable factorized Laplace prior via `--entropy-rate`, or a
     discrete factorized categorical prior over STE indices via
     `--categorical-rate`, plus optional tabled rANS bitstream check via
-    `--ans-check` (encode/decode STE indices under the categorical PMFs)
+    `--ans-check` and self-describing pack via `--ans-pack` (freq side-info
+    so decode needs no live CategoricalEntropyModel)
 
 Swap `MockLatentBatch` for real `vae.encode(...).latent_dist.sample()` and
 attach a perceptual / diffusion-aware reconstruction loss when moving off the
@@ -36,6 +37,8 @@ from generative_codec import (
     LearnedQuantAffine,
     ans_decode_indices,
     ans_encode_indices,
+    ans_pack_indices,
+    ans_unpack_indices,
     categorical_rate_stats,
     factorized_rate_stats,
     quantized_rate_stats,
@@ -446,12 +449,15 @@ def ans_check_one_code(
     quant_levels: int = 256,
     learned_quant: Optional[LearnedQuantAffine] = None,
     categorical_model: Optional[CategoricalEntropyModel] = None,
+    use_pack: bool = False,
 ) -> dict:
     """
     Encode one STE index vector with tabled rANS under the categorical prior.
 
     Uses the first row of `batch_flat`. Requires a CategoricalEntropyModel (same
-    geometry as `--categorical-rate`). Returns encode meta plus a round-trip OK flag.
+    geometry as `--categorical-rate`). When `use_pack` is True, wraps the
+    payload in a self-describing pack (freq side-info) and decodes via
+    `ans_unpack_indices` (no live model). Returns encode meta plus round-trip OK.
     """
     if categorical_model is None:
         raise ValueError("categorical_model required for ans_check_one_code")
@@ -465,10 +471,19 @@ def ans_check_one_code(
                 code, levels=quant_levels, code_min=-1.0, code_max=1.0
             )
         indices = qmeta["indices"].reshape(-1)
-        payload, meta = ans_encode_indices(indices, categorical_model)
-        decoded = ans_decode_indices(payload, categorical_model)
-        meta = dict(meta)
-        meta["roundtrip_ok"] = bool(torch.equal(decoded, indices.long().cpu()))
+        if use_pack:
+            packed, meta = ans_pack_indices(indices, categorical_model)
+            decoded, umeta = ans_unpack_indices(packed)
+            meta = dict(meta)
+            meta["unpack_sideinfo_mode"] = umeta["sideinfo_mode"]
+            meta["roundtrip_ok"] = bool(torch.equal(decoded, indices.long().cpu()))
+            meta["used_pack"] = True
+        else:
+            payload, meta = ans_encode_indices(indices, categorical_model)
+            decoded = ans_decode_indices(payload, categorical_model)
+            meta = dict(meta)
+            meta["roundtrip_ok"] = bool(torch.equal(decoded, indices.long().cpu()))
+            meta["used_pack"] = False
     return meta
 
 
@@ -516,8 +531,22 @@ def main() -> None:
         action="store_true",
         help="Use CategoricalEntropyModel over STE indices as the rate term (implies STE; exclusive with --entropy-rate).",
     )
+    parser.add_argument(
+        "--ans-check",
+        action="store_true",
+        help="After the sketch, rANS-encode one STE index vector under the categorical prior and verify decode (implies --categorical-rate).",
+    )
+    parser.add_argument(
+        "--ans-pack",
+        action="store_true",
+        help="Like --ans-check but use a self-describing pack (freq side-info + payload; decode without live model). Implies --ans-check.",
+    )
     args = parser.parse_args()
 
+    if args.ans_pack:
+        args.ans_check = True
+    if args.ans_check:
+        args.categorical_rate = True
     if args.entropy_rate and args.categorical_rate:
         parser.error("--entropy-rate and --categorical-rate are mutually exclusive")
 
@@ -541,19 +570,45 @@ def main() -> None:
             f"factorized categorical init (L={args.quant_levels}): "
             f"{categorical_rate_stats(compact_dim=args.compact_dim, levels=args.quant_levels)}"
         )
-    history = run_sketch_epochs(
-        steps=args.steps,
-        batch_size=args.batch_size,
-        compact_dim=args.compact_dim,
-        lr=args.lr,
-        seed=args.seed,
-        use_ste_quant=ste_on,
-        quant_levels=args.quant_levels,
-        use_entropy_rate=args.entropy_rate,
-        entropy_hinge=args.entropy_hinge,
-        use_learned_quant_scales=args.learned_quant_scales,
-        use_categorical_rate=args.categorical_rate,
-    )
+    # Inline sketch so --ans-check / --ans-pack can reuse the trained categorical prior
+    g = torch.Generator().manual_seed(args.seed)
+    torch.manual_seed(args.seed)
+    compression, decompression = make_bottleneck_pair(compact_dim=args.compact_dim)
+    entropy_model = None
+    categorical_model = None
+    learned_quant = None
+    params = list(compression.parameters()) + list(decompression.parameters())
+    if args.entropy_rate:
+        entropy_model = FactorizedEntropyModel(args.compact_dim)
+        params = params + list(entropy_model.parameters())
+    if args.categorical_rate:
+        categorical_model = CategoricalEntropyModel(args.compact_dim, levels=args.quant_levels)
+        params = params + list(categorical_model.parameters())
+    if args.learned_quant_scales:
+        learned_quant = LearnedQuantAffine(args.compact_dim)
+        params = params + list(learned_quant.parameters())
+    opt = torch.optim.Adam(params, lr=args.lr)
+    data = MockLatentBatch(batch_size=args.batch_size)
+    history = []
+    last_batch = None
+    for _ in range(args.steps):
+        last_batch = data.sample(generator=g)
+        metrics = train_step(
+            compression,
+            decompression,
+            opt,
+            last_batch,
+            args.compact_dim,
+            use_ste_quant=ste_on,
+            quant_levels=args.quant_levels,
+            use_entropy_rate=args.entropy_rate,
+            entropy_model=entropy_model,
+            entropy_hinge=args.entropy_hinge,
+            learned_quant=learned_quant,
+            use_categorical_rate=args.categorical_rate,
+            categorical_model=categorical_model,
+        )
+        history.append(metrics)
     first, last = history[0], history[-1]
     tags = []
     if first.used_ste_quant:
@@ -573,7 +628,25 @@ def main() -> None:
         f"step {len(history) - 1}: recon_mse={last.recon_mse:.6f} bpp={last.rate_bpp:.5f} "
         f"rate_penalty={last.rate_penalty:.6f} total={last.total_loss:.6f}"
     )
-    print("Sketch complete — hyperprior notes / real VAE latents / ANS next.")
+    if args.ans_check:
+        assert last_batch is not None and categorical_model is not None
+        meta = ans_check_one_code(
+            compression,
+            last_batch,
+            quant_levels=args.quant_levels,
+            learned_quant=learned_quant,
+            categorical_model=categorical_model,
+            use_pack=args.ans_pack,
+        )
+        mode = "pack" if args.ans_pack else "payload"
+        print(
+            f"ANS {mode} check: roundtrip_ok={meta['roundtrip_ok']} "
+            f"measured_bits={meta.get('measured_pack_bits', meta.get('measured_bits'))} "
+            f"expected_nll_bits={meta['expected_nll_bits']:.2f} "
+            f"sideinfo_mode={meta.get('sideinfo_mode', meta.get('unpack_sideinfo_mode', 'n/a'))} "
+            f"pack_bytes={meta.get('pack_bytes', meta.get('payload_bytes'))}"
+        )
+    print("Sketch complete — hyperprior notes / real VAE latents next.")
 
 
 if __name__ == "__main__":
