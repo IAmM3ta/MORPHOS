@@ -28,7 +28,7 @@ VAE decode / LPIPS / diffusion score term
 | Term | Sketch | Production upgrade |
 |------|--------|--------------------|
 | Reconstruction | Latent MSE on flat codes | VAE-decoded L1/L2 + LPIPS; optional diffusion denoising score |
-| Rate | FP32 bpp hinge, STE + uniform `log2(L)` (+ optional **`LearnedQuantAffine`**), factorized Laplace `--entropy-rate`, **categorical** `--categorical-rate`, **tabled rANS** `--ans-check`, **ANS pack** `--ans-pack` | Hyperprior / bits-back / faster ANS — see [ENTROPY-CODING-NOTES.md](./ENTROPY-CODING-NOTES.md) |
+| Rate | FP32 bpp hinge, STE + uniform `log2(L)` (+ optional **`LearnedQuantAffine`**), factorized Laplace `--entropy-rate`, **categorical** `--categorical-rate`, **tabled rANS** `--ans-check`, **ANS pack** `--ans-pack`, **hyperprior pack** `--ans-hyper` | Spatial hyperprior / bits-back / faster ANS — see [ENTROPY-CODING-NOTES.md](./ENTROPY-CODING-NOTES.md) |
 | Data | `MockLatentBatch` Gaussian | Real `vae.encode` latents from image datasets |
 
 ## Run (CPU, no HF download)
@@ -44,6 +44,7 @@ PYTHONPATH=. python bottleneck_train_sketch.py --steps 8 --categorical-rate --qu
 PYTHONPATH=. python bottleneck_train_sketch.py --steps 8 --categorical-rate --learned-quant-scales
 PYTHONPATH=. python bottleneck_train_sketch.py --steps 8 --ans-check --quant-levels 256
 PYTHONPATH=. python bottleneck_train_sketch.py --steps 8 --ans-pack --quant-levels 256
+PYTHONPATH=. python bottleneck_train_sketch.py --steps 8 --ans-hyper --hyper-dim 16 --quant-levels 256
 PYTHONPATH=. pytest tests/test_train_sketch.py -q
 ```
 

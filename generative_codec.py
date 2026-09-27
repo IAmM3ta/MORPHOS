@@ -858,6 +858,352 @@ def ans_pack_stats(
     return out
 
 
+
+# ---------------------------------------------------------------------------
+# Hyperprior table side-info (Ballé-style sketch for flat codes)
+# ---------------------------------------------------------------------------
+# Replaces raw MRPH v1 frequency tables with a small quantized hyperlatent.
+# Encoder/decoder share HyperpriorTableModel weights (frozen entropy bridge).
+# Wire format v2 (little-endian), sideinfo_mode = HYPER:
+#   magic[4]="MRPH" | version u8=2 | scale_bits u8
+#   compact_dim u16 | levels u16 | sideinfo_mode u8=2
+#   hyper_dim u16 | hyper_levels u16
+#   hyper_min f32 | hyper_max f32
+#   H × u8 quantized hyper indices
+#   payload_len u32 | payload bytes
+#
+# Honest rate = hyper side-info + rANS payload. Compare to v1 per-dim tables
+# via hyperprior_pack_stats / meta["raw_per_dim_sideinfo_bytes"].
+
+ANS_PACK_VERSION_HYPER = 2
+ANS_SIDEINFO_HYPER = 2
+
+
+class HyperpriorTableModel(nn.Module):
+    """
+    Tiny analysis/synthesis bridge: logits (D, L) ↔ hyperlatent z_h ∈ R^H.
+
+    Synthesis maps z_h → factorized categorical logits. Analysis projects a
+    target logit table down to z_h. On the wire we send only quantized z_h
+    (H symbols) instead of D×L raw frequency u16s — a Ballé-style hyperprior
+    sketch for today's *flat* compact code (no spatial hyperprior yet).
+
+    Both ends must share these weights (like a frozen entropy decoder). The
+    pack is therefore not fully self-describing without the module, but
+    side-info shrinks from O(D·L) to O(H). See docs/ENTROPY-CODING-NOTES.md.
+    """
+
+    def __init__(self, compact_dim: int, levels: int = 256, hyper_dim: int = 16):
+        super().__init__()
+        if compact_dim < 1:
+            raise ValueError("compact_dim must be >= 1")
+        if levels < 2:
+            raise ValueError("levels must be >= 2")
+        if hyper_dim < 1:
+            raise ValueError("hyper_dim must be >= 1")
+        self.compact_dim = compact_dim
+        self.levels = levels
+        self.hyper_dim = hyper_dim
+        flat = compact_dim * levels
+        self.analysis = nn.Linear(flat, hyper_dim)
+        self.synthesis = nn.Linear(hyper_dim, flat)
+
+    def encode_hyper(self, logits: torch.Tensor) -> torch.Tensor:
+        """Project logits (D, L) → continuous hyperlatent (H,)."""
+        if logits.shape != (self.compact_dim, self.levels):
+            raise ValueError(
+                f"logits shape {tuple(logits.shape)} != "
+                f"({self.compact_dim}, {self.levels})"
+            )
+        return self.analysis(logits.reshape(-1).float())
+
+    def decode_logits(self, z_h: torch.Tensor) -> torch.Tensor:
+        """Synthesize logits (D, L) from hyperlatent (H,)."""
+        if z_h.shape[-1] != self.hyper_dim:
+            raise ValueError(
+                f"z_h last dim {z_h.shape[-1]} != hyper_dim {self.hyper_dim}"
+            )
+        flat = self.synthesis(z_h.float().reshape(-1))
+        return flat.view(self.compact_dim, self.levels)
+
+    def fit_to_logits(
+        self,
+        target_logits: torch.Tensor,
+        *,
+        steps: int = 64,
+        lr: float = 5e-2,
+    ) -> float:
+        """
+        Briefly adapt analysis/synthesis so decode(encode(target)) ≈ target.
+
+        Used before packing so reconstructed PMFs stay close enough for rANS
+        round-trip under the approximated tables. Returns final MSE.
+        """
+        target = target_logits.detach().float()
+        if target.shape != (self.compact_dim, self.levels):
+            raise ValueError("target_logits shape mismatch")
+        opt = torch.optim.Adam(self.parameters(), lr=lr)
+        last = 0.0
+        self.train()
+        for _ in range(max(1, int(steps))):
+            opt.zero_grad()
+            z = self.encode_hyper(target)
+            pred = self.decode_logits(z)
+            loss = F.mse_loss(pred, target)
+            loss.backward()
+            opt.step()
+            last = float(loss.detach().cpu())
+        self.eval()
+        return last
+
+
+def quantize_hyperlatent(
+    z_h: torch.Tensor,
+    levels: int = 256,
+    *,
+    z_min: Optional[float] = None,
+    z_max: Optional[float] = None,
+) -> tuple[torch.Tensor, torch.Tensor, dict]:
+    """
+    Uniform quantize a hyperlatent (H,) onto `levels` bins.
+
+    Returns (indices long (H,), dequant float (H,), meta with z_min/z_max).
+    """
+    if levels < 2 or levels > 256:
+        raise ValueError("hyper levels must be in [2, 256] (stored as u8)")
+    z = z_h.detach().float().reshape(-1)
+    lo = float(z.min()) if z_min is None else float(z_min)
+    hi = float(z.max()) if z_max is None else float(z_max)
+    if hi <= lo:
+        hi = lo + 1e-3
+    # Mid-rise uniform bins over [lo, hi]
+    span = hi - lo
+    x = ((z - lo) / span).clamp(0.0, 1.0)
+    idx = torch.floor(x * (levels - 1) + 1e-6).long().clamp(0, levels - 1)
+    dequant = lo + (idx.float() + 0.0) * (span / float(levels - 1))
+    meta = {
+        "hyper_dim": int(z.numel()),
+        "hyper_levels": int(levels),
+        "z_min": lo,
+        "z_max": hi,
+        "bits_per_hyper_symbol": math.log2(levels),
+    }
+    return idx, dequant, meta
+
+
+def ans_hyper_pack_indices(
+    indices: torch.Tensor,
+    model: "CategoricalEntropyModel",
+    hyper: "HyperpriorTableModel",
+    *,
+    scale_bits: int = ANS_SCALE_BITS,
+    hyper_levels: int = 256,
+    fit_steps: int = 64,
+) -> tuple[bytes, dict]:
+    """
+    ANS pack whose side-info is a quantized hyperlatent (not raw freq tables).
+
+    Optionally fits `hyper` to `model.logits` first so reconstructed PMFs stay
+    faithful. Encodes STE indices under the *reconstructed* tables; decode
+    needs the same `HyperpriorTableModel` weights. Meta compares hyper
+    side-info bytes to a raw per-dim freq table of equal geometry.
+    """
+    if hyper.compact_dim != model.compact_dim or hyper.levels != model.levels:
+        raise ValueError("HyperpriorTableModel geometry must match CategoricalEntropyModel")
+    if fit_steps > 0:
+        fit_mse = hyper.fit_to_logits(model.logits.detach(), steps=fit_steps)
+    else:
+        fit_mse = None
+    with torch.no_grad():
+        z = hyper.encode_hyper(model.logits.detach())
+        h_idx, z_hat, qmeta = quantize_hyperlatent(z, levels=hyper_levels)
+        logits_hat = hyper.decode_logits(z_hat)
+        # Mix a tiny uniform floor so every symbol keeps mass after quantize
+        pmf = torch.softmax(logits_hat, dim=-1)
+        pmf = 0.99 * pmf + 0.01 / float(model.levels)
+        freqs = _pmf_to_freqs(pmf, scale_bits=scale_bits)
+        idx_list = indices.long().clamp(0, model.levels - 1).tolist()
+        freqs_rows = [[int(x) for x in row] for row in freqs.tolist()]
+        payload = ans_encode_symbols(idx_list, freqs_rows, scale_bits=scale_bits)
+        expected_bits = float(model.total_bits(indices.long()).cpu())
+
+    # Header
+    import struct
+
+    header = bytearray()
+    header.extend(ANS_PACK_MAGIC)
+    header.append(ANS_PACK_VERSION_HYPER)
+    header.append(int(scale_bits))
+    header.extend(int(model.compact_dim).to_bytes(2, "little"))
+    header.extend(int(model.levels).to_bytes(2, "little"))
+    header.append(ANS_SIDEINFO_HYPER)
+    header.extend(int(hyper.hyper_dim).to_bytes(2, "little"))
+    header.extend(int(hyper_levels).to_bytes(2, "little"))
+    header.extend(struct.pack("<ff", float(qmeta["z_min"]), float(qmeta["z_max"])))
+    header.extend(bytes(int(x) & 0xFF for x in h_idx.tolist()))
+    header.extend(len(payload).to_bytes(4, "little"))
+    packed = bytes(header) + payload
+    sideinfo_bytes = len(packed) - len(payload)
+    raw_per_dim = 11 + model.compact_dim * model.levels * 2 + 4  # v1 per-dim header+freqs+len
+    raw_shared = 11 + model.levels * 2 + 4
+    meta = {
+        "scale_bits": scale_bits,
+        "compact_dim": model.compact_dim,
+        "levels": model.levels,
+        "pack_version": ANS_PACK_VERSION_HYPER,
+        "sideinfo_mode": "hyper",
+        "hyper_dim": hyper.hyper_dim,
+        "hyper_levels": hyper_levels,
+        "z_min": qmeta["z_min"],
+        "z_max": qmeta["z_max"],
+        "sideinfo_bytes": sideinfo_bytes,
+        "payload_bytes": len(payload),
+        "pack_bytes": len(packed),
+        "measured_pack_bits": len(packed) * 8.0,
+        "measured_bits": len(payload) * 8.0,
+        "expected_nll_bits": expected_bits,
+        "overhead_bits": len(payload) * 8.0 - expected_bits,
+        "raw_per_dim_sideinfo_bytes": raw_per_dim,
+        "raw_shared_sideinfo_bytes": raw_shared,
+        "sideinfo_saving_vs_per_dim": raw_per_dim - sideinfo_bytes,
+        "fit_mse": fit_mse,
+        "note": "hyperprior ANS pack (quantized z_h side-info + ryg_rans payload)",
+    }
+    return packed, meta
+
+
+def ans_hyper_unpack_indices(
+    packed: bytes,
+    hyper: "HyperpriorTableModel",
+    *,
+    scale_bits: Optional[int] = None,
+) -> tuple[torch.Tensor, dict]:
+    """
+    Decode a v2 hyperprior pack using shared HyperpriorTableModel weights.
+
+    Returns (indices long (D,), meta).
+    """
+    import struct
+
+    if len(packed) < 4 + 1 + 1 + 2 + 2 + 1 + 2 + 2 + 8 + 4:
+        raise ValueError("hyper ANS pack too short")
+    if packed[0:4] != ANS_PACK_MAGIC:
+        raise ValueError(f"bad ANS pack magic {packed[0:4]!r}")
+    version = packed[4]
+    if version != ANS_PACK_VERSION_HYPER:
+        raise ValueError(f"expected hyper pack version {ANS_PACK_VERSION_HYPER}, got {version}")
+    file_scale = packed[5]
+    if scale_bits is None:
+        scale_bits = file_scale
+    elif scale_bits != file_scale:
+        raise ValueError("scale_bits mismatch")
+    compact_dim = int.from_bytes(packed[6:8], "little")
+    levels = int.from_bytes(packed[8:10], "little")
+    mode = packed[10]
+    if mode != ANS_SIDEINFO_HYPER:
+        raise ValueError(f"expected HYPER sideinfo_mode, got {mode}")
+    hyper_dim = int.from_bytes(packed[11:13], "little")
+    hyper_levels = int.from_bytes(packed[13:15], "little")
+    z_min, z_max = struct.unpack("<ff", packed[15:23])
+    pos = 23
+    if hyper.compact_dim != compact_dim or hyper.levels != levels:
+        raise ValueError("HyperpriorTableModel geometry does not match pack header")
+    if hyper.hyper_dim != hyper_dim:
+        raise ValueError("HyperpriorTableModel hyper_dim does not match pack header")
+    h_bytes = packed[pos : pos + hyper_dim]
+    if len(h_bytes) < hyper_dim:
+        raise ValueError("hyper indices truncated")
+    pos += hyper_dim
+    if pos + 4 > len(packed):
+        raise ValueError("hyper pack missing payload length")
+    payload_len = int.from_bytes(packed[pos : pos + 4], "little")
+    pos += 4
+    payload = packed[pos : pos + payload_len]
+    if len(payload) != payload_len:
+        raise ValueError("hyper pack payload truncated")
+    if pos + payload_len != len(packed):
+        raise ValueError("hyper pack has trailing junk")
+
+    h_idx = torch.tensor(list(h_bytes), dtype=torch.long)
+    span = float(z_max) - float(z_min)
+    if span <= 0:
+        span = 1e-3
+    z_hat = float(z_min) + h_idx.float() * (span / float(hyper_levels - 1))
+    with torch.no_grad():
+        logits_hat = hyper.decode_logits(z_hat)
+        pmf = torch.softmax(logits_hat, dim=-1)
+        pmf = 0.99 * pmf + 0.01 / float(levels)
+        freqs = _pmf_to_freqs(pmf, scale_bits=scale_bits)
+        freqs_rows = [[int(x) for x in row] for row in freqs.tolist()]
+    symbols = ans_decode_symbols(payload, freqs_rows, scale_bits=scale_bits)
+    if len(symbols) != compact_dim:
+        raise ValueError(f"decoded length {len(symbols)} != compact_dim {compact_dim}")
+    indices = torch.tensor(symbols, dtype=torch.long)
+    meta = {
+        "pack_version": version,
+        "scale_bits": scale_bits,
+        "compact_dim": compact_dim,
+        "levels": levels,
+        "sideinfo_mode": "hyper",
+        "hyper_dim": hyper_dim,
+        "hyper_levels": hyper_levels,
+        "z_min": float(z_min),
+        "z_max": float(z_max),
+        "sideinfo_bytes": len(packed) - payload_len,
+        "payload_bytes": payload_len,
+        "pack_bytes": len(packed),
+        "measured_pack_bits": len(packed) * 8.0,
+    }
+    return indices, meta
+
+
+def hyperprior_pack_stats(
+    compact_dim: int = 256,
+    levels: int = 256,
+    hyper_dim: int = 16,
+    hyper_levels: int = 256,
+    image_side: int = 512,
+    *,
+    measured_pack_bits: Optional[float] = None,
+    sideinfo_bytes: Optional[int] = None,
+) -> dict:
+    """
+    Illustrative bpp / side-info comparison for a hyperprior ANS pack.
+
+    Contrasts O(H) hyper side-info with v1 shared / per-dim raw frequency tables.
+    """
+    pixels = float(image_side * image_side)
+    # Rough header sizes matching the wire formats above
+    raw_shared = 11 + levels * 2 + 4
+    raw_per_dim = 11 + compact_dim * levels * 2 + 4
+    hyper_si = 11 + 2 + 2 + 8 + hyper_dim + 4  # through payload_len
+    out = {
+        "compact_dim": compact_dim,
+        "levels": levels,
+        "hyper_dim": hyper_dim,
+        "hyper_levels": hyper_levels,
+        "image_side": image_side,
+        "raw_shared_sideinfo_bytes": raw_shared,
+        "raw_per_dim_sideinfo_bytes": raw_per_dim,
+        "hyper_sideinfo_bytes_estimate": hyper_si,
+        "sideinfo_saving_vs_per_dim_estimate": raw_per_dim - hyper_si,
+        "hyper_sideinfo_bits_estimate": hyper_si * 8.0,
+        "hyper_sideinfo_bpp_estimate": (hyper_si * 8.0) / pixels,
+        "note": (
+            "hyperprior replaces raw freq tables with quantized z_h; "
+            "measured_pack_bits fill in after ans_hyper_pack_indices"
+        ),
+    }
+    if sideinfo_bytes is not None:
+        out["sideinfo_bytes"] = int(sideinfo_bytes)
+        out["sideinfo_bits"] = float(sideinfo_bytes) * 8.0
+        out["sideinfo_bits_per_pixel"] = float(sideinfo_bytes) * 8.0 / pixels
+    if measured_pack_bits is not None:
+        out["measured_pack_bits"] = float(measured_pack_bits)
+        out["measured_pack_bits_per_pixel"] = float(measured_pack_bits) / pixels
+    return out
+
+
 class LearnedQuantAffine(nn.Module):
     """
     Per-dimension learned affine before uniform STE quantization.

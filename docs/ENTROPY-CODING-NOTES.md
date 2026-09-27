@@ -34,7 +34,7 @@ bits-per-pixel on the wire
 | Continuous code | Mock MLP output | Same, or VQ / residual |
 | Quantization | `quantize_uniform()` + STE + **`LearnedQuantAffine`** | Soft / residual / VQ refinements |
 | Rate proxy | FP32 bpp, `log2(L)` × dim, factorized Laplace, or **categorical** `-log2 p(index)` | Hyperprior / autoregressive entropy model |
-| Bitstream | **tabled rANS** + **self-describing pack** (freq side-info) | Multi-speed ANS, arithmetic, bits-back, hyperprior tables |
+| Bitstream | **tabled rANS** + **self-describing pack** + **hyperprior pack** (z_h side-info) | Multi-speed ANS, arithmetic, bits-back, spatial hyperprior |
 
 ## Uniform quantization sketch
 
@@ -151,14 +151,38 @@ MRPH | ver | scale_bits | D | L | mode | freqs… | payload_len | payload
 - `mode=per_dim` otherwise — `D × L × u16` tables travel with the bitstream.
 - Meta reports `sideinfo_bytes`, `payload_bytes`, `measured_pack_bits`.
 
-Honest rate = payload + side-info. A hyperprior later replaces raw freq tables
-with a cheap latent. CLI: `--ans-pack` (implies `--ans-check`).
+Honest rate = payload + side-info. A hyperprior pack (below) replaces raw freq
+tables with a cheap quantized latent. CLI: `--ans-pack` (implies `--ans-check`).
+
+## Hyperprior table side-info (flat-code sketch)
+
+`HyperpriorTableModel` is a tiny analysis/synthesis bridge:
+
+```text
+categorical logits (D, L)
+        ↓  analysis Linear
+hyperlatent z_h ∈ R^H          (H ≪ D·L)
+        ↓  uniform quant (L_h levels)
+wire side-info: H × u8 (+ range)
+        ↓  synthesis Linear (shared weights)
+reconstructed logits → freq tables → rANS payload
+```
+
+`ans_hyper_pack_indices` / `ans_hyper_unpack_indices` use MRPH **v2** with
+`sideinfo_mode=hyper`. Decode needs the shared `HyperpriorTableModel` (unlike
+v1 raw freq packs). Meta reports `sideinfo_saving_vs_per_dim` against a v1
+per-dim table of equal geometry. `hyperprior_pack_stats` documents the
+illustrative comparison. CLI: `bottleneck_train_sketch.py --ans-hyper`
+(implies `--ans-check` / categorical; exclusive with `--ans-pack`).
+
+This is still a **factorized** table hyperprior for a flat vector — not a
+spatial Ballé hyperprior over a latent feature map. Spatial structure lands
+when real VAE latents replace `MockLatentBatch`.
 
 ## What to plug in next
 
-1. **Hyperprior** (Ballé-style) to shrink / replace pack side-info if spatial
-   structure returns (today's code is a flat vector).
-2. **Wire real VAE latents** into the sketch (`MockLatentBatch` → encode).
+1. **Wire real VAE latents** into the sketch (`MockLatentBatch` → encode).
+2. **Spatial hyperprior** once the code is a feature map, not a flat vector.
 3. Faster rANS (SIMD / multi-state) once the CPU sketch is on real latents.
 
 ## Out of scope (this note)

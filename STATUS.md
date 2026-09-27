@@ -2,6 +2,18 @@
 
 RedBot daily cadence notes for `IAmM3ta/MORPHOS`. Newest first.
 
+## 2026-09-27 (09:00 ET — daily commit)
+
+**Landed:** Hyperprior table side-info pack for the IMAGE_8 bottleneck bitstream (replaces raw freq tables).
+
+- Added `HyperpriorTableModel` + `quantize_hyperlatent` + `ans_hyper_pack_indices` / `ans_hyper_unpack_indices` / `hyperprior_pack_stats` in `generative_codec.py` (MRPH v2 wire format; shared analysis/synthesis weights; H≪D·L side-info).
+- Wired `--ans-hyper` / `--hyper-dim` / `--hyper-levels` into `bottleneck_train_sketch` (exclusive with `--ans-pack`; implies `--ans-check` / categorical). Meta reports `sideinfo_saving_vs_per_dim`.
+- Extended shape + train-sketch tests; updated `docs/ENTROPY-CODING-NOTES.md` and `docs/TRAINING-SKETCH.md`; README Changelog.
+
+**Reviewed:** Self-describing ANS pack + tabled rANS + CategoricalEntropyModel paths from 2026-09-24–26 remain intact. Morphogen v2 / red-team brief unchanged this pass.
+
+**Next focus candidates:** wire real VAE latents into the sketch, spatial hyperprior once the code is a feature map, Morphogen Sync auth hello hardening.
+
 ## 2026-09-26 (09:00 ET — daily commit)
 
 **Landed:** Self-describing ANS pack (freq side-info + rANS payload) for the IMAGE_8 bottleneck bitstream.

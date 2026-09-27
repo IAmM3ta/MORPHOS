@@ -12,8 +12,9 @@ diffusion prior stay frozen. This module is a *shape-faithful sketch*:
     differentiable factorized Laplace prior via `--entropy-rate`, or a
     discrete factorized categorical prior over STE indices via
     `--categorical-rate`, plus optional tabled rANS bitstream check via
-    `--ans-check` and self-describing pack via `--ans-pack` (freq side-info
-    so decode needs no live CategoricalEntropyModel)
+    `--ans-check`, self-describing pack via `--ans-pack` (freq side-info),
+    or hyperprior pack via `--ans-hyper` (quantized z_h side-info; shared
+    HyperpriorTableModel weights replace raw freq tables)
 
 Swap `MockLatentBatch` for real `vae.encode(...).latent_dist.sample()` and
 attach a perceptual / diffusion-aware reconstruction loss when moving off the
@@ -34,13 +35,17 @@ from generative_codec import (
     CategoricalEntropyModel,
     FactorizedEntropyModel,
     GenerativeCompressionCodec,
+    HyperpriorTableModel,
     LearnedQuantAffine,
     ans_decode_indices,
     ans_encode_indices,
+    ans_hyper_pack_indices,
+    ans_hyper_unpack_indices,
     ans_pack_indices,
     ans_unpack_indices,
     categorical_rate_stats,
     factorized_rate_stats,
+    hyperprior_pack_stats,
     quantized_rate_stats,
     rate_stats,
     straight_through_quantize,
@@ -450,6 +455,11 @@ def ans_check_one_code(
     learned_quant: Optional[LearnedQuantAffine] = None,
     categorical_model: Optional[CategoricalEntropyModel] = None,
     use_pack: bool = False,
+    use_hyper: bool = False,
+    hyper_model: Optional[HyperpriorTableModel] = None,
+    hyper_dim: int = 16,
+    hyper_levels: int = 256,
+    hyper_fit_steps: int = 64,
 ) -> dict:
     """
     Encode one STE index vector with tabled rANS under the categorical prior.
@@ -457,10 +467,14 @@ def ans_check_one_code(
     Uses the first row of `batch_flat`. Requires a CategoricalEntropyModel (same
     geometry as `--categorical-rate`). When `use_pack` is True, wraps the
     payload in a self-describing pack (freq side-info) and decodes via
-    `ans_unpack_indices` (no live model). Returns encode meta plus round-trip OK.
+    `ans_unpack_indices` (no live model). When `use_hyper` is True, wraps with
+    a quantized hyperlatent side-info pack (needs shared HyperpriorTableModel).
+    Returns encode meta plus round-trip OK.
     """
     if categorical_model is None:
         raise ValueError("categorical_model required for ans_check_one_code")
+    if use_pack and use_hyper:
+        raise ValueError("use_pack and use_hyper are mutually exclusive")
     compression.eval()
     with torch.no_grad():
         code = compression(batch_flat[:1])
@@ -471,6 +485,28 @@ def ans_check_one_code(
                 code, levels=quant_levels, code_min=-1.0, code_max=1.0
             )
         indices = qmeta["indices"].reshape(-1)
+    if use_hyper:
+        if hyper_model is None:
+            hyper_model = HyperpriorTableModel(
+                categorical_model.compact_dim,
+                levels=quant_levels,
+                hyper_dim=hyper_dim,
+            )
+        packed, meta = ans_hyper_pack_indices(
+            indices,
+            categorical_model,
+            hyper_model,
+            hyper_levels=hyper_levels,
+            fit_steps=hyper_fit_steps,
+        )
+        decoded, umeta = ans_hyper_unpack_indices(packed, hyper_model)
+        meta = dict(meta)
+        meta["unpack_sideinfo_mode"] = umeta["sideinfo_mode"]
+        meta["roundtrip_ok"] = bool(torch.equal(decoded, indices.long().cpu()))
+        meta["used_pack"] = True
+        meta["used_hyper"] = True
+        return meta
+    with torch.no_grad():
         if use_pack:
             packed, meta = ans_pack_indices(indices, categorical_model)
             decoded, umeta = ans_unpack_indices(packed)
@@ -478,12 +514,14 @@ def ans_check_one_code(
             meta["unpack_sideinfo_mode"] = umeta["sideinfo_mode"]
             meta["roundtrip_ok"] = bool(torch.equal(decoded, indices.long().cpu()))
             meta["used_pack"] = True
+            meta["used_hyper"] = False
         else:
             payload, meta = ans_encode_indices(indices, categorical_model)
             decoded = ans_decode_indices(payload, categorical_model)
             meta = dict(meta)
             meta["roundtrip_ok"] = bool(torch.equal(decoded, indices.long().cpu()))
             meta["used_pack"] = False
+            meta["used_hyper"] = False
     return meta
 
 
@@ -541,9 +579,28 @@ def main() -> None:
         action="store_true",
         help="Like --ans-check but use a self-describing pack (freq side-info + payload; decode without live model). Implies --ans-check.",
     )
+    parser.add_argument(
+        "--ans-hyper",
+        action="store_true",
+        help="Like --ans-check but pack with quantized hyperlatent side-info (HyperpriorTableModel). Exclusive with --ans-pack. Implies --ans-check.",
+    )
+    parser.add_argument(
+        "--hyper-dim",
+        type=int,
+        default=16,
+        help="Hyperlatent size H for --ans-hyper (default 16).",
+    )
+    parser.add_argument(
+        "--hyper-levels",
+        type=int,
+        default=256,
+        help="Uniform codebook size for quantized z_h when --ans-hyper (default 256).",
+    )
     args = parser.parse_args()
 
-    if args.ans_pack:
+    if args.ans_pack and args.ans_hyper:
+        parser.error("--ans-pack and --ans-hyper are mutually exclusive")
+    if args.ans_pack or args.ans_hyper:
         args.ans_check = True
     if args.ans_check:
         args.categorical_rate = True
@@ -569,6 +626,11 @@ def main() -> None:
         print(
             f"factorized categorical init (L={args.quant_levels}): "
             f"{categorical_rate_stats(compact_dim=args.compact_dim, levels=args.quant_levels)}"
+        )
+    if args.ans_hyper:
+        print(
+            f"hyperprior pack sketch (H={args.hyper_dim}, L_h={args.hyper_levels}): "
+            f"{hyperprior_pack_stats(compact_dim=args.compact_dim, levels=args.quant_levels, hyper_dim=args.hyper_dim, hyper_levels=args.hyper_levels)}"
         )
     # Inline sketch so --ans-check / --ans-pack can reuse the trained categorical prior
     g = torch.Generator().manual_seed(args.seed)
@@ -637,16 +699,25 @@ def main() -> None:
             learned_quant=learned_quant,
             categorical_model=categorical_model,
             use_pack=args.ans_pack,
+            use_hyper=args.ans_hyper,
+            hyper_dim=args.hyper_dim,
+            hyper_levels=args.hyper_levels,
         )
-        mode = "pack" if args.ans_pack else "payload"
+        if args.ans_hyper:
+            mode = "hyper"
+        elif args.ans_pack:
+            mode = "pack"
+        else:
+            mode = "payload"
         print(
             f"ANS {mode} check: roundtrip_ok={meta['roundtrip_ok']} "
             f"measured_bits={meta.get('measured_pack_bits', meta.get('measured_bits'))} "
             f"expected_nll_bits={meta['expected_nll_bits']:.2f} "
             f"sideinfo_mode={meta.get('sideinfo_mode', meta.get('unpack_sideinfo_mode', 'n/a'))} "
-            f"pack_bytes={meta.get('pack_bytes', meta.get('payload_bytes'))}"
+            f"pack_bytes={meta.get('pack_bytes', meta.get('payload_bytes'))} "
+            f"sideinfo_saving_vs_per_dim={meta.get('sideinfo_saving_vs_per_dim', 'n/a')}"
         )
-    print("Sketch complete — hyperprior notes / real VAE latents next.")
+    print("Sketch complete — real VAE latents / faster ANS next.")
 
 
 if __name__ == "__main__":

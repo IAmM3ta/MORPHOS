@@ -391,3 +391,84 @@ def test_ans_pack_rejects_bad_magic():
     except ValueError:
         pass
 
+
+
+def test_ans_hyper_pack_roundtrip_and_sideinfo_saving():
+    import torch
+    from generative_codec import (
+        CategoricalEntropyModel,
+        HyperpriorTableModel,
+        ans_hyper_pack_indices,
+        ans_hyper_unpack_indices,
+        ans_pack_indices,
+        hyperprior_pack_stats,
+    )
+
+    torch.manual_seed(2)
+    D, L, H = 48, 16, 8
+    peaked = CategoricalEntropyModel(D, levels=L)
+    with torch.no_grad():
+        peaked.logits.zero_()
+        for d in range(D):
+            peaked.logits[d, d % L] = 4.0
+    idx = torch.tensor([d % L for d in range(D)], dtype=torch.long)
+
+    # Raw per-dim pack for comparison
+    packed_raw, meta_raw = ans_pack_indices(idx, peaked)
+    assert meta_raw["sideinfo_mode"] == "per_dim"
+
+    hyper = HyperpriorTableModel(D, levels=L, hyper_dim=H)
+    packed_h, meta_h = ans_hyper_pack_indices(
+        idx, peaked, hyper, hyper_levels=64, fit_steps=80
+    )
+    assert meta_h["sideinfo_mode"] == "hyper"
+    assert meta_h["pack_version"] == 2
+    assert meta_h["sideinfo_bytes"] < meta_raw["sideinfo_bytes"]
+    assert meta_h["sideinfo_saving_vs_per_dim"] > 0
+    decoded, umeta = ans_hyper_unpack_indices(packed_h, hyper)
+    assert torch.equal(decoded, idx)
+    assert umeta["sideinfo_mode"] == "hyper"
+    assert umeta["hyper_dim"] == H
+
+    stats = hyperprior_pack_stats(compact_dim=D, levels=L, hyper_dim=H, hyper_levels=64)
+    assert stats["sideinfo_saving_vs_per_dim_estimate"] > 0
+    assert stats["hyper_sideinfo_bytes_estimate"] < stats["raw_per_dim_sideinfo_bytes"]
+
+
+def test_ans_hyper_pack_rejects_bad_version_on_v1_unpack_path():
+    """v2 hyper packs must not be silently accepted by v1 ans_unpack_indices."""
+    import torch
+    from generative_codec import (
+        CategoricalEntropyModel,
+        HyperpriorTableModel,
+        ans_hyper_pack_indices,
+        ans_unpack_indices,
+    )
+
+    torch.manual_seed(0)
+    model = CategoricalEntropyModel(16, levels=8)
+    hyper = HyperpriorTableModel(16, levels=8, hyper_dim=4)
+    idx = torch.randint(0, 8, (16,))
+    packed, _ = ans_hyper_pack_indices(idx, model, hyper, hyper_levels=32, fit_steps=40)
+    try:
+        ans_unpack_indices(packed)
+        assert False, "expected ValueError for version mismatch"
+    except ValueError:
+        pass
+
+
+def test_hyperprior_pack_stats_with_measurement():
+    from generative_codec import hyperprior_pack_stats
+
+    s = hyperprior_pack_stats(
+        compact_dim=256,
+        levels=256,
+        hyper_dim=16,
+        hyper_levels=256,
+        image_side=512,
+        measured_pack_bits=5000.0,
+        sideinfo_bytes=40,
+    )
+    assert s["sideinfo_bytes"] == 40
+    assert abs(s["sideinfo_bits"] - 320.0) < 1e-9
+    assert s["raw_per_dim_sideinfo_bytes"] > s["hyper_sideinfo_bytes_estimate"]
