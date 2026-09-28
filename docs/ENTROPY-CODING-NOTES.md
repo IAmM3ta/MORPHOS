@@ -33,7 +33,7 @@ bits-per-pixel on the wire
 |-------|----------------|--------------------|
 | Continuous code | Mock MLP output | Same, or VQ / residual |
 | Quantization | `quantize_uniform()` + STE + **`LearnedQuantAffine`** | Soft / residual / VQ refinements |
-| Rate proxy | FP32 bpp, `log2(L)` × dim, factorized Laplace, or **categorical** `-log2 p(index)` | Hyperprior / autoregressive entropy model |
+| Rate proxy | FP32 bpp, `log2(L)` × dim, factorized Laplace, **categorical** `-log2 p(index)`, or **hierarchical hyperprior** R(z_h)+R(index\|z) | Spatial hyperprior / autoregressive entropy model |
 | Bitstream | **tabled rANS** + **self-describing pack** + **hyperprior pack** (z_h side-info) | Multi-speed ANS, arithmetic, bits-back, spatial hyperprior |
 
 ## Uniform quantization sketch
@@ -179,11 +179,37 @@ This is still a **factorized** table hyperprior for a flat vector — not a
 spatial Ballé hyperprior over a latent feature map. Spatial structure lands
 when real VAE latents replace `MockLatentBatch`.
 
+## Hierarchical hyperprior rate (train-time)
+
+Packing alone does not train the bridge. `hyperprior_hierarchical_rate_bpp`
+is the differentiable Ballé-style sketch:
+
+```text
+categorical logits (D, L)
+        ↓  analysis
+z_h ∈ R^H
+        ↓  STE uniform quant (L_h)
+z_hat   →  side-info rate = H · log2(L_h)   (uniform alphabet; detached)
+        ↓  synthesis
+logits_hat → conditional rate = Σ -log2 p(index | z_hat)
+```
+
+Total expected bits ≈ side-info + conditional. Gradients update
+`HyperpriorTableModel` and `CategoricalEntropyModel.logits` (via analysis).
+CLI: `bottleneck_train_sketch.py --hyper-rate` (exclusive with
+`--categorical-rate` / `--entropy-rate`; implies STE). Combine with
+`--ans-hyper` after training to measure the pack under the same weights.
+
+`hyperprior_hierarchical_rate_stats` documents the untrained-init cost
+(uniform conditional + uniform side-info). A peaked synthesis lowers the
+conditional term; side-info stays `H · log2(L_h)` until a learned prior on
+z_h replaces the uniform alphabet.
+
 ## What to plug in next
 
 1. **Wire real VAE latents** into the sketch (`MockLatentBatch` → encode).
 2. **Spatial hyperprior** once the code is a feature map, not a flat vector.
-3. Faster rANS (SIMD / multi-state) once the CPU sketch is on real latents.
+3. Learned prior on z_h (replace uniform side-info) + faster rANS on real latents.
 
 ## Out of scope (this note)
 

@@ -34,10 +34,10 @@ flowchart LR
 | SD 1.5 VAE + UNet | Real (pretrained) | Diffusers `runwayml/stable-diffusion-v1-5` |
 | Compression / decompression MLPs | **Untrained mocks** | Shape demo only — train end-to-end in production |
 | Decode path | VAE → img2img | Avoids incorrect `latents=` text2img shortcuts |
-| Rate–distortion | Illustrative only | `rate_stats()` FP32 + `quantized_rate_stats()` / STE (+ **`LearnedQuantAffine`**) + factorized Laplace + **categorical** `-log2 p(index)` + **tabled rANS** + **self-describing ANS pack** + **hyperprior pack**; see [ENTROPY-CODING-NOTES.md](./docs/ENTROPY-CODING-NOTES.md) |
-| Bottleneck train sketch | CPU dry-run + STE + learned scales + entropy + categorical + ANS check/pack/hyper | [`bottleneck_train_sketch.py`](./bottleneck_train_sketch.py) (`--ste-quant`, `--learned-quant-scales`, `--entropy-rate`, `--categorical-rate`, `--ans-check`, `--ans-pack`, `--ans-hyper`) + [docs/TRAINING-SKETCH.md](./docs/TRAINING-SKETCH.md) |
+| Rate–distortion | Illustrative only | `rate_stats()` FP32 + `quantized_rate_stats()` / STE (+ **`LearnedQuantAffine`**) + factorized Laplace + **categorical** `-log2 p(index)` + **tabled rANS** + **self-describing ANS pack** + **hyperprior pack** + **hierarchical hyperprior rate**; see [ENTROPY-CODING-NOTES.md](./docs/ENTROPY-CODING-NOTES.md) |
+| Bottleneck train sketch | CPU dry-run + STE + learned scales + entropy + categorical + hyper-rate + ANS check/pack/hyper | [`bottleneck_train_sketch.py`](./bottleneck_train_sketch.py) (`--ste-quant`, `--learned-quant-scales`, `--entropy-rate`, `--categorical-rate`, `--hyper-rate`, `--ans-check`, `--ans-pack`, `--ans-hyper`) + [docs/TRAINING-SKETCH.md](./docs/TRAINING-SKETCH.md) |
 
-Default illustrative rate at 512²: **256×4 B = 1024 B** → **~0.031 bpp** before generative decode (not a trained RD curve). Uniform 8-bit symbols on the same dim sketch **~0.0078 bpp**. Factorized Laplace (`--entropy-rate`) and categorical-over-STE-indices (`--categorical-rate`) are differentiable rate proxies; `--ans-check` adds a tabled rANS bitstream round-trip under those categorical PMFs, `--ans-pack` wraps it with frequency side-info so decode needs no live model, and `--ans-hyper` replaces those tables with a quantized hyperlatent (`HyperpriorTableModel`). `--learned-quant-scales` adapts per-dim STE ranges.
+Default illustrative rate at 512²: **256×4 B = 1024 B** → **~0.031 bpp** before generative decode (not a trained RD curve). Uniform 8-bit symbols on the same dim sketch **~0.0078 bpp**. Factorized Laplace (`--entropy-rate`) and categorical-over-STE-indices (`--categorical-rate`) are differentiable rate proxies; `--ans-check` adds a tabled rANS bitstream round-trip under those categorical PMFs, `--ans-pack` wraps it with frequency side-info so decode needs no live model, and `--ans-hyper` replaces those tables with a quantized hyperlatent (`HyperpriorTableModel`). `--hyper-rate` trains that bridge under a hierarchical R(z_h)+R(indices|z_hat) objective. `--learned-quant-scales` adapts per-dim STE ranges.
 
 ## Quick start (codec)
 
@@ -68,6 +68,7 @@ PYTHONPATH=. python bottleneck_train_sketch.py --steps 8 --categorical-rate
 PYTHONPATH=. python bottleneck_train_sketch.py --steps 8 --ans-check
 PYTHONPATH=. python bottleneck_train_sketch.py --steps 8 --ans-pack
 PYTHONPATH=. python bottleneck_train_sketch.py --steps 8 --ans-hyper
+PYTHONPATH=. python bottleneck_train_sketch.py --steps 8 --hyper-rate --hyper-dim 16
 PYTHONPATH=. pytest tests/test_train_sketch.py -q
 ```
 
@@ -106,6 +107,7 @@ MORPHOS under RedBot ops. Daily commits refine architecture, docs, and eval harn
 
 ### Changelog
 
+- **2026-09-28 (09:00 ET)** — Hierarchical hyperprior rate (`hyperprior_hierarchical_rate_bpp` / `--hyper-rate`); trains `HyperpriorTableModel` jointly; tests + entropy/training docs; [STATUS.md](STATUS.md).
 - **2026-09-27 (09:00 ET)** — Hyperprior table side-info pack (`HyperpriorTableModel` / `--ans-hyper`) replacing raw freq tables; tests + entropy/training docs; [STATUS.md](STATUS.md).
 - **2026-09-26 (09:00 ET)** — Self-describing ANS pack (`ans_pack_indices` / `--ans-pack`) with freq side-info; CLI `--ans-check` wired; tests + entropy/training docs; [STATUS.md](STATUS.md).
 - **2026-09-25 (09:00 ET)** — Tabled rANS encode/decode over categorical STE indices (`ans_encode_indices` / `--ans-check`), tests + entropy/training docs; [STATUS.md](STATUS.md).

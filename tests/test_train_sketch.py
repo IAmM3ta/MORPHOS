@@ -7,6 +7,7 @@ from bottleneck_train_sketch import (
     categorical_rate_penalty_bpp,
     combined_loss,
     factorized_rate_penalty_bpp,
+    hyperprior_rate_penalty_bpp,
     make_bottleneck_pair,
     quantized_rate_penalty_bpp,
     rate_penalty_bpp,
@@ -18,6 +19,7 @@ from generative_codec import (
     CategoricalEntropyModel,
     FactorizedEntropyModel,
     GenerativeCompressionCodec,
+    HyperpriorTableModel,
     LearnedQuantAffine,
 )
 
@@ -485,3 +487,88 @@ def test_ans_check_one_code_hyper_roundtrip():
     assert meta["used_hyper"] is True
     assert meta["sideinfo_mode"] == "hyper"
     assert meta["sideinfo_saving_vs_per_dim"] > 0
+
+
+
+def test_hyperprior_rate_penalty_is_positive():
+    cat = CategoricalEntropyModel(32, levels=16)
+    hyper = HyperpriorTableModel(32, levels=16, hyper_dim=8)
+    indices = torch.randint(0, 16, (2, 32))
+    pen = hyperprior_rate_penalty_bpp(
+        indices, cat, hyper, image_side=512, hyper_levels=64, weight=1.0
+    )
+    assert float(pen.detach()) > 0.0
+
+
+def test_train_step_hyper_rate_closes_and_flags():
+    compact = 32
+    levels = 16
+    comp, decomp = make_bottleneck_pair(compact_dim=compact)
+    cat = CategoricalEntropyModel(compact, levels=levels)
+    hyper = HyperpriorTableModel(compact, levels=levels, hyper_dim=8)
+    opt = torch.optim.Adam(
+        list(comp.parameters())
+        + list(decomp.parameters())
+        + list(cat.parameters())
+        + list(hyper.parameters()),
+        lr=1e-3,
+    )
+    batch = torch.randn(2, GenerativeCompressionCodec.FLAT_DIM)
+    metrics = train_step(
+        comp,
+        decomp,
+        opt,
+        batch,
+        compact,
+        quant_levels=levels,
+        use_hyper_rate=True,
+        categorical_model=cat,
+        hyper_model=hyper,
+        hyper_levels=64,
+    )
+    assert metrics.used_hyper_rate is True
+    assert metrics.used_ste_quant is True
+    assert metrics.rate_bpp > 0.0
+    assert metrics.total_loss == metrics.total_loss  # not NaN
+
+
+def test_run_sketch_epochs_hyper_rate_finite():
+    history = run_sketch_epochs(
+        steps=3,
+        batch_size=2,
+        compact_dim=32,
+        seed=6,
+        use_hyper_rate=True,
+        quant_levels=16,
+        hyper_dim=8,
+        hyper_levels=64,
+    )
+    assert len(history) == 3
+    assert all(m.used_hyper_rate for m in history)
+    assert all(m.used_ste_quant for m in history)
+    assert all(m.total_loss == m.total_loss for m in history)
+
+
+def test_hyper_rate_and_categorical_mutually_exclusive():
+    compact = 16
+    comp, decomp = make_bottleneck_pair(compact_dim=compact)
+    cat = CategoricalEntropyModel(compact, levels=8)
+    hyper = HyperpriorTableModel(compact, levels=8, hyper_dim=4)
+    opt = torch.optim.Adam(list(comp.parameters()) + list(decomp.parameters()), lr=1e-3)
+    batch = torch.randn(1, GenerativeCompressionCodec.FLAT_DIM)
+    try:
+        train_step(
+            comp,
+            decomp,
+            opt,
+            batch,
+            compact,
+            use_categorical_rate=True,
+            categorical_model=cat,
+            use_hyper_rate=True,
+            hyper_model=hyper,
+            quant_levels=8,
+        )
+        assert False, "expected ValueError"
+    except ValueError:
+        pass

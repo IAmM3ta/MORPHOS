@@ -16,8 +16,9 @@ Rate note (illustrative FP32, no entropy coding):
   See also quantize_uniform / straight_through_quantize / quantized_rate_stats,
   FactorizedEntropyModel, CategoricalEntropyModel, LearnedQuantAffine,
   tabled rANS (`ans_encode_indices` / `ans_decode_indices`),
-  self-describing ANS packs (`ans_pack_indices` / `ans_unpack_indices`), and
-  docs/ENTROPY-CODING-NOTES.md.
+  self-describing ANS packs (`ans_pack_indices` / `ans_unpack_indices`),
+  hyperprior packs (`ans_hyper_pack_indices`), hierarchical hyperprior rate
+  (`hyperprior_hierarchical_rate_bpp`), and docs/ENTROPY-CODING-NOTES.md.
 """
 
 from __future__ import annotations
@@ -1202,6 +1203,194 @@ def hyperprior_pack_stats(
         out["measured_pack_bits"] = float(measured_pack_bits)
         out["measured_pack_bits_per_pixel"] = float(measured_pack_bits) / pixels
     return out
+
+
+def straight_through_quantize_hyperlatent(
+    z_h: torch.Tensor,
+    levels: int = 256,
+    *,
+    z_min: Optional[float] = None,
+    z_max: Optional[float] = None,
+) -> tuple[torch.Tensor, torch.Tensor, dict]:
+    """
+    STE uniform quantize of a hyperlatent (H,) onto `levels` bins.
+
+    Forward matches `quantize_hyperlatent`; backward is identity STE so analysis
+    / upstream logits keep gradients while the rate term can count a discrete
+    side-info alphabet of size `levels`.
+    """
+    idx_hard, dequant_hard, meta = quantize_hyperlatent(
+        z_h.detach(), levels=levels, z_min=z_min, z_max=z_max
+    )
+    # Rebuild dequant from the live tensor with STE: z + (z_hat - z).detach()
+    z = z_h.float().reshape(-1)
+    lo = float(meta["z_min"])
+    hi = float(meta["z_max"])
+    span = hi - lo
+    if span <= 0:
+        span = 1e-3
+    z_hat_hard = lo + idx_hard.float() * (span / float(levels - 1))
+    z_hat = z + (z_hat_hard.to(device=z.device, dtype=z.dtype) - z).detach()
+    meta = dict(meta)
+    meta["ste"] = True
+    meta["indices"] = idx_hard.to(device=z.device)
+    return idx_hard.to(device=z.device), z_hat, meta
+
+
+def hyperprior_conditional_nll_bits(
+    indices: torch.Tensor,
+    hyper: "HyperpriorTableModel",
+    z_h: torch.Tensor,
+) -> torch.Tensor:
+    """
+    Per-element -log2 p(index | z_h) under synthesized categorical logits.
+
+    `indices` long tensor shaped (D,) or (B, D); `z_h` shaped (H,). Gradients
+    flow to `hyper.synthesis` (and to `z_h` when it requires grad).
+    """
+    if z_h.numel() != hyper.hyper_dim:
+        raise ValueError(
+            f"z_h numel {z_h.numel()} != hyper_dim {hyper.hyper_dim}"
+        )
+    logits = hyper.decode_logits(z_h)  # (D, L)
+    log_p = F.log_softmax(logits.float(), dim=-1)
+    idx = indices.long().clamp(0, hyper.levels - 1)
+    if idx.shape[-1] != hyper.compact_dim:
+        raise ValueError(
+            f"indices last dim {idx.shape[-1]} != compact_dim {hyper.compact_dim}"
+        )
+    ln2 = math.log(2.0)
+    if idx.ndim == 1:
+        chosen = log_p[torch.arange(hyper.compact_dim, device=idx.device), idx]
+        return -chosen / ln2
+    # (B, D)
+    log_p_b = log_p.unsqueeze(0).expand(idx.shape[0], -1, -1)
+    chosen = torch.gather(log_p_b, dim=-1, index=idx.unsqueeze(-1)).squeeze(-1)
+    return -chosen / ln2
+
+
+def hyperprior_hierarchical_bits(
+    indices: torch.Tensor,
+    categorical_model: "CategoricalEntropyModel",
+    hyper: "HyperpriorTableModel",
+    *,
+    hyper_levels: int = 256,
+    use_ste_z: bool = True,
+) -> tuple[torch.Tensor, dict]:
+    """
+    Ballé-style hierarchical rate for the flat-code hyperprior sketch:
+
+      R = R(z_h) + R(indices | z_hat)
+
+    - z_h = analysis(categorical.logits)
+    - z_hat = STE-quantized z_h (discrete side-info alphabet) when use_ste_z
+    - R(z_h) = H · log2(L_h)  (uniform side-info; detached constant)
+    - R(indices | z_hat) = sum -log2 Categorical(synthesis(z_hat))[index]
+
+    Returns (mean batch total bits as a 0-dim tensor, meta). Gradients update
+    HyperpriorTableModel and CategoricalEntropyModel.logits via analysis.
+    """
+    if hyper.compact_dim != categorical_model.compact_dim or hyper.levels != categorical_model.levels:
+        raise ValueError("HyperpriorTableModel geometry must match CategoricalEntropyModel")
+    if hyper_levels < 2 or hyper_levels > 256:
+        raise ValueError("hyper_levels must be in [2, 256]")
+    logits = categorical_model.logits
+    z_h = hyper.encode_hyper(logits)
+    if use_ste_z:
+        _idx, z_hat, qmeta = straight_through_quantize_hyperlatent(z_h, levels=hyper_levels)
+    else:
+        z_hat = z_h
+        qmeta = {
+            "hyper_dim": hyper.hyper_dim,
+            "hyper_levels": hyper_levels,
+            "z_min": float(z_h.detach().min()),
+            "z_max": float(z_h.detach().max()),
+            "bits_per_hyper_symbol": math.log2(hyper_levels),
+            "ste": False,
+        }
+    cond = hyperprior_conditional_nll_bits(indices, hyper, z_hat)
+    if cond.ndim == 1:
+        cond_total = cond.sum()
+    else:
+        cond_total = cond.reshape(cond.shape[0], -1).sum(dim=-1).mean()
+    sideinfo_bits = float(hyper.hyper_dim) * math.log2(float(hyper_levels))
+    # Detached constant side-info (alphabet size is discrete / schedule-level)
+    total = cond_total + torch.tensor(
+        sideinfo_bits, device=cond_total.device, dtype=cond_total.dtype
+    )
+    meta = {
+        "hyper_dim": hyper.hyper_dim,
+        "hyper_levels": int(hyper_levels),
+        "sideinfo_bits": sideinfo_bits,
+        "conditional_bits": float(cond_total.detach().cpu()),
+        "total_bits": float(total.detach().cpu()),
+        "use_ste_z": bool(use_ste_z),
+        "z_min": qmeta.get("z_min"),
+        "z_max": qmeta.get("z_max"),
+        "note": (
+            "hierarchical hyperprior rate: uniform R(z_h)+conditional "
+            "R(indices|z_hat); not yet a measured ANS pack"
+        ),
+    }
+    return total, meta
+
+
+def hyperprior_hierarchical_rate_bpp(
+    indices: torch.Tensor,
+    categorical_model: "CategoricalEntropyModel",
+    hyper: "HyperpriorTableModel",
+    *,
+    hyper_levels: int = 256,
+    image_side: int = 512,
+    use_ste_z: bool = True,
+) -> torch.Tensor:
+    """Expected bits-per-pixel under the hierarchical hyperprior rate sketch."""
+    total, _ = hyperprior_hierarchical_bits(
+        indices,
+        categorical_model,
+        hyper,
+        hyper_levels=hyper_levels,
+        use_ste_z=use_ste_z,
+    )
+    pixels = float(image_side * image_side)
+    return total / pixels
+
+
+def hyperprior_hierarchical_rate_stats(
+    compact_dim: int = 256,
+    levels: int = 256,
+    hyper_dim: int = 16,
+    hyper_levels: int = 256,
+    image_side: int = 512,
+) -> dict:
+    """
+    Illustrative hierarchical bpp at untrained-init (uniform categorical +
+    uniform hyper side-info).
+
+    conditional ≈ D · log2(L); side-info = H · log2(L_h).
+    """
+    pixels = float(image_side * image_side)
+    cond = float(compact_dim) * math.log2(float(levels))
+    side = float(hyper_dim) * math.log2(float(hyper_levels))
+    total = cond + side
+    cat = categorical_rate_stats(compact_dim=compact_dim, levels=levels, image_side=image_side)
+    return {
+        "compact_dim": compact_dim,
+        "levels": levels,
+        "hyper_dim": hyper_dim,
+        "hyper_levels": hyper_levels,
+        "image_side": image_side,
+        "sideinfo_bits": side,
+        "conditional_bits_uniform": cond,
+        "total_bits_uniform": total,
+        "bits_per_pixel": total / pixels,
+        "categorical_only_bits_per_pixel": cat["bits_per_pixel"],
+        "sideinfo_overhead_bpp": side / pixels,
+        "note": (
+            "untrained hierarchical sketch: uniform R(z_h)+uniform R(index|z); "
+            "trained synthesis can lower the conditional term"
+        ),
+    }
 
 
 class LearnedQuantAffine(nn.Module):

@@ -2,6 +2,18 @@
 
 RedBot daily cadence notes for `IAmM3ta/MORPHOS`. Newest first.
 
+## 2026-09-28 (09:00 ET — daily commit)
+
+**Landed:** Hierarchical hyperprior rate term for the IMAGE_8 bottleneck (Ballé-style R(z_h)+R(indices|z_hat)).
+
+- Added `straight_through_quantize_hyperlatent`, `hyperprior_conditional_nll_bits`, `hyperprior_hierarchical_bits` / `hyperprior_hierarchical_rate_bpp` / `hyperprior_hierarchical_rate_stats` in `generative_codec.py` (uniform side-info alphabet + conditional categorical under synthesized logits).
+- Wired `--hyper-rate` into `bottleneck_train_sketch` (implies STE; trains `HyperpriorTableModel` jointly; exclusive with `--categorical-rate` / `--entropy-rate`). Meta flags `used_hyper_rate`.
+- Extended shape + train-sketch tests; updated `docs/ENTROPY-CODING-NOTES.md` and `docs/TRAINING-SKETCH.md`; README Changelog.
+
+**Reviewed:** Hyperprior ANS pack + self-describing ANS pack + tabled rANS + CategoricalEntropyModel paths from 2026-09-24–27 remain intact. Morphogen v2 / red-team brief unchanged this pass.
+
+**Next focus candidates:** wire real VAE latents into the sketch, spatial hyperprior once the code is a feature map, Morphogen Sync auth hello hardening.
+
 ## 2026-09-27 (09:00 ET — daily commit)
 
 **Landed:** Hyperprior table side-info pack for the IMAGE_8 bottleneck bitstream (replaces raw freq tables).

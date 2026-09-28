@@ -472,3 +472,70 @@ def test_hyperprior_pack_stats_with_measurement():
     assert s["sideinfo_bytes"] == 40
     assert abs(s["sideinfo_bits"] - 320.0) < 1e-9
     assert s["raw_per_dim_sideinfo_bytes"] > s["hyper_sideinfo_bytes_estimate"]
+
+
+
+def test_straight_through_quantize_hyperlatent_ste_grad():
+    from generative_codec import straight_through_quantize_hyperlatent
+
+    z = torch.randn(8, requires_grad=True)
+    idx, z_hat, meta = straight_through_quantize_hyperlatent(z, levels=32)
+    assert idx.shape == (8,)
+    assert z_hat.shape == (8,)
+    assert meta["ste"] is True
+    z_hat.sum().backward()
+    assert z.grad is not None
+    assert torch.allclose(z.grad, torch.ones_like(z))
+
+
+def test_hyperprior_hierarchical_rate_bpp_and_grad():
+    from generative_codec import (
+        CategoricalEntropyModel,
+        HyperpriorTableModel,
+        hyperprior_hierarchical_bits,
+        hyperprior_hierarchical_rate_bpp,
+        hyperprior_hierarchical_rate_stats,
+    )
+
+    torch.manual_seed(0)
+    D, L, H = 24, 16, 6
+    cat = CategoricalEntropyModel(D, levels=L)
+    hyper = HyperpriorTableModel(D, levels=L, hyper_dim=H)
+    indices = torch.randint(0, L, (2, D))
+    bpp = hyperprior_hierarchical_rate_bpp(
+        indices, cat, hyper, hyper_levels=64, image_side=512
+    )
+    assert bpp.ndim == 0
+    bpp.backward()
+    assert cat.logits.grad is not None
+    assert hyper.analysis.weight.grad is not None
+    assert hyper.synthesis.weight.grad is not None
+
+    total, meta = hyperprior_hierarchical_bits(
+        indices[0], cat, hyper, hyper_levels=64
+    )
+    assert meta["sideinfo_bits"] == H * torch.tensor(64.0).log2().item()
+    assert meta["conditional_bits"] > 0.0
+    assert abs(float(total.detach()) - (meta["sideinfo_bits"] + meta["conditional_bits"])) < 1e-4
+
+    stats = hyperprior_hierarchical_rate_stats(
+        compact_dim=D, levels=L, hyper_dim=H, hyper_levels=64, image_side=512
+    )
+    assert stats["sideinfo_bits"] == H * torch.tensor(64.0).log2().item()
+    assert stats["bits_per_pixel"] > stats["categorical_only_bits_per_pixel"]
+
+
+def test_hyperprior_hierarchical_rejects_geometry_mismatch():
+    from generative_codec import (
+        CategoricalEntropyModel,
+        HyperpriorTableModel,
+        hyperprior_hierarchical_bits,
+    )
+
+    cat = CategoricalEntropyModel(8, levels=16)
+    hyper = HyperpriorTableModel(8, levels=8, hyper_dim=4)  # levels mismatch
+    try:
+        hyperprior_hierarchical_bits(torch.zeros(8, dtype=torch.long), cat, hyper)
+        assert False, "expected ValueError"
+    except ValueError:
+        pass
