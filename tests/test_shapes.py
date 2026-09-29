@@ -539,3 +539,89 @@ def test_hyperprior_hierarchical_rejects_geometry_mismatch():
         assert False, "expected ValueError"
     except ValueError:
         pass
+
+
+
+def test_ans_hyper_hier_pack_roundtrip_and_hier_meta():
+    import torch
+    from generative_codec import (
+        CategoricalEntropyModel,
+        HyperpriorTableModel,
+        ans_hyper_hier_pack_indices,
+        ans_hyper_hier_unpack_indices,
+        ans_hyper_unpack_indices,
+        hyperprior_hier_pack_stats,
+    )
+
+    torch.manual_seed(3)
+    D, L, H = 48, 16, 8
+    peaked = CategoricalEntropyModel(D, levels=L)
+    with torch.no_grad():
+        peaked.logits.zero_()
+        for d in range(D):
+            peaked.logits[d, d % L] = 4.0
+    idx = torch.tensor([d % L for d in range(D)], dtype=torch.long)
+
+    hyper = HyperpriorTableModel(D, levels=L, hyper_dim=H)
+    packed, meta = ans_hyper_hier_pack_indices(
+        idx, peaked, hyper, hyper_levels=64, fit_steps=80
+    )
+    assert meta["sideinfo_mode"] == "hyper_hier"
+    assert meta["pack_version"] == 3
+    assert meta["expected_hier_sideinfo_bits"] == H * torch.tensor(64.0).log2().item()
+    assert meta["expected_nll_bits"] > 0.0
+    assert meta["sideinfo_saving_vs_per_dim"] > 0
+    decoded, umeta = ans_hyper_hier_unpack_indices(packed, hyper)
+    assert torch.equal(decoded, idx)
+    assert umeta["sideinfo_mode"] == "hyper_hier"
+    assert umeta["pack_version"] == 3
+
+    # v2 unpack must reject v3
+    try:
+        ans_hyper_unpack_indices(packed, hyper)
+        assert False, "expected ValueError for version mismatch"
+    except ValueError:
+        pass
+
+    stats = hyperprior_hier_pack_stats(compact_dim=D, levels=L, hyper_dim=H, hyper_levels=64)
+    assert stats["pack_version"] == 3
+    assert stats["sideinfo_mode"] == "hyper_hier"
+    assert stats["expected_hier_total_bits_uniform"] > 0
+
+
+def test_ans_hyper_hier_pack_rejects_bad_version_on_v1_path():
+    import torch
+    from generative_codec import (
+        CategoricalEntropyModel,
+        HyperpriorTableModel,
+        ans_hyper_hier_pack_indices,
+        ans_unpack_indices,
+    )
+
+    torch.manual_seed(0)
+    model = CategoricalEntropyModel(16, levels=8)
+    hyper = HyperpriorTableModel(16, levels=8, hyper_dim=4)
+    idx = torch.randint(0, 8, (16,))
+    packed, _ = ans_hyper_hier_pack_indices(idx, model, hyper, hyper_levels=32, fit_steps=40)
+    try:
+        ans_unpack_indices(packed)
+        assert False, "expected ValueError for version mismatch"
+    except ValueError:
+        pass
+
+
+def test_hyperprior_hier_pack_stats_with_measurement():
+    from generative_codec import hyperprior_hier_pack_stats
+
+    s = hyperprior_hier_pack_stats(
+        compact_dim=256,
+        levels=256,
+        hyper_dim=16,
+        hyper_levels=256,
+        image_side=512,
+        measured_pack_bits=5200.0,
+        sideinfo_bytes=40,
+    )
+    assert s["sideinfo_bytes"] == 40
+    assert abs(s["sideinfo_bits"] - 320.0) < 1e-9
+    assert s["pack_version"] == 3

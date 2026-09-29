@@ -572,3 +572,49 @@ def test_hyper_rate_and_categorical_mutually_exclusive():
         assert False, "expected ValueError"
     except ValueError:
         pass
+
+
+
+def test_ans_check_one_code_hyper_hier_roundtrip():
+    import torch
+    from generative_codec import CategoricalEntropyModel, GenerativeCompressionCodec
+    from bottleneck_train_sketch import ans_check_one_code, make_bottleneck_pair, train_step
+
+    torch.manual_seed(0)
+    compact_dim = 32
+    levels = 16
+    compression, decompression = make_bottleneck_pair(compact_dim=compact_dim, hidden=64)
+    cat = CategoricalEntropyModel(compact_dim, levels=levels)
+    params = (
+        list(compression.parameters())
+        + list(decompression.parameters())
+        + list(cat.parameters())
+    )
+    opt = torch.optim.Adam(params, lr=1e-3)
+    batch = torch.randn(2, GenerativeCompressionCodec.FLAT_DIM)
+    train_step(
+        compression,
+        decompression,
+        opt,
+        batch,
+        compact_dim,
+        use_ste_quant=True,
+        quant_levels=levels,
+        use_categorical_rate=True,
+        categorical_model=cat,
+    )
+    meta = ans_check_one_code(
+        compression,
+        batch,
+        quant_levels=levels,
+        categorical_model=cat,
+        use_hyper_hier=True,
+        hyper_dim=8,
+        hyper_levels=64,
+        hyper_fit_steps=60,
+    )
+    assert meta["roundtrip_ok"] is True
+    assert meta["used_hyper_hier"] is True
+    assert meta["sideinfo_mode"] == "hyper_hier"
+    assert meta["pack_version"] == 3
+    assert meta["sideinfo_saving_vs_per_dim"] > 0

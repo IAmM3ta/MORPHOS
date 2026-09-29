@@ -34,7 +34,7 @@ bits-per-pixel on the wire
 | Continuous code | Mock MLP output | Same, or VQ / residual |
 | Quantization | `quantize_uniform()` + STE + **`LearnedQuantAffine`** | Soft / residual / VQ refinements |
 | Rate proxy | FP32 bpp, `log2(L)` × dim, factorized Laplace, **categorical** `-log2 p(index)`, or **hierarchical hyperprior** R(z_h)+R(index\|z) | Spatial hyperprior / autoregressive entropy model |
-| Bitstream | **tabled rANS** + **self-describing pack** + **hyperprior pack** (z_h side-info) | Multi-speed ANS, arithmetic, bits-back, spatial hyperprior |
+| Bitstream | **tabled rANS** + **self-describing pack** + **hyperprior pack** (z_h side-info) + **hierarchical hyperprior pack** (MRPH v3) | Multi-speed ANS, arithmetic, bits-back, spatial hyperprior |
 
 ## Uniform quantization sketch
 
@@ -204,6 +204,30 @@ CLI: `bottleneck_train_sketch.py --hyper-rate` (exclusive with
 (uniform conditional + uniform side-info). A peaked synthesis lowers the
 conditional term; side-info stays `H · log2(L_h)` until a learned prior on
 z_h replaces the uniform alphabet.
+
+## Hierarchical hyperprior ANS pack (MRPH v3)
+
+`ans_hyper_hier_pack_indices` / `ans_hyper_hier_unpack_indices` turn the
+hierarchical rate path into a measured bitstream:
+
+```text
+categorical logits (D, L)
+        ↓  analysis
+z_h ∈ R^H
+        ↓  uniform quant (L_h)
+wire: H × u8 (+ range)          ← side-info
+        ↓  synthesis
+logits_hat → freq tables → rANS payload of STE indices
+```
+
+MRPH **v3** uses `sideinfo_mode=hyper_hier`. Unlike v2 (optional
+`fit_to_logits` then pack), v3 follows analysis→quantize→synthesis so the
+payload is conditioned on `z_hat` the same way as
+`hyperprior_hierarchical_bits`. Meta reports hierarchical expected bits
+(`R(z_h)+R(indices|z_hat)`) vs measured pack bits. Decode needs the shared
+`HyperpriorTableModel`. CLI: `bottleneck_train_sketch.py --ans-hyper-hier`
+(exclusive with `--ans-pack` / `--ans-hyper`; pairs cleanly with
+`--hyper-rate` using `fit_steps=0`).
 
 ## What to plug in next
 
