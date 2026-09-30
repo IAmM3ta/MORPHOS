@@ -18,7 +18,8 @@ diffusion prior stay frozen. This module is a *shape-faithful sketch*:
     hyperprior ANS pack via `--ans-hyper-hier` (MRPH v3; z_h then indices
     under synthesis(z_hat)), or hierarchical hyperprior rate via
     `--hyper-rate` (R(z_h)+R(indices|z_hat); trains the shared
-    HyperpriorTableModel jointly)
+    HyperpriorTableModel jointly), optionally with `--learned-hyper-prior`
+    (factorized categorical prior on quantized z_h replacing uniform side-info)
 
 Swap `MockLatentBatch` for real `vae.encode(...).latent_dist.sample()` and
 attach a perceptual / diffusion-aware reconstruction loss when moving off the
@@ -103,6 +104,7 @@ class TrainStepMetrics:
     used_categorical_rate: bool = False
     used_learned_quant_scales: bool = False
     used_hyper_rate: bool = False
+    used_learned_hyper_prior: bool = False
 
 
 def reconstruction_mse(pred_flat: torch.Tensor, target_flat: torch.Tensor) -> torch.Tensor:
@@ -205,6 +207,7 @@ def hyperprior_rate_penalty_bpp(
     image_side: int = 512,
     *,
     hyper_levels: int = 256,
+    hyper_prior: Optional[CategoricalEntropyModel] = None,
     target_bpp: float = 0.05,
     weight: float = 1.0,
     hinge: bool = False,
@@ -213,6 +216,8 @@ def hyperprior_rate_penalty_bpp(
     Differentiable hierarchical hyperprior bpp: R(z_h)+R(indices|z_hat).
 
     Gradients update HyperpriorTableModel and categorical logits (via analysis).
+    When `hyper_prior` is set, R(z_h) is a learned categorical NLL over STE
+    hyper indices (grads update prior logits) instead of uniform H·log2(L_h).
     Default soft rate weight; hinge=True mirrors the other rate hinges.
     """
     bpp = hyperprior_hierarchical_rate_bpp(
@@ -221,6 +226,7 @@ def hyperprior_rate_penalty_bpp(
         hyper_model,
         hyper_levels=hyper_levels,
         image_side=image_side,
+        hyper_prior=hyper_prior,
     )
     if hinge:
         return weight * torch.relu(bpp - target_bpp)
@@ -248,12 +254,15 @@ def combined_loss(
     use_hyper_rate: bool = False,
     hyper_model: Optional[HyperpriorTableModel] = None,
     hyper_levels: int = 256,
+    hyper_prior: Optional[CategoricalEntropyModel] = None,
 ) -> tuple[torch.Tensor, TrainStepMetrics]:
     """Reconstruction MSE + FP32 / uniform / Laplace / categorical / hyper rate term."""
     if use_entropy_rate and (use_categorical_rate or use_hyper_rate):
         raise ValueError("use_entropy_rate is mutually exclusive with categorical/hyper rate")
     if use_categorical_rate and use_hyper_rate:
         raise ValueError("use_categorical_rate and use_hyper_rate are mutually exclusive")
+    if hyper_prior is not None and not use_hyper_rate:
+        raise ValueError("hyper_prior requires use_hyper_rate=True")
     recon = reconstruction_mse(pred_flat, target_flat)
     if use_hyper_rate:
         if categorical_model is None or indices is None or hyper_model is None:
@@ -266,6 +275,7 @@ def combined_loss(
             hyper_model,
             image_side=image_side,
             hyper_levels=hyper_levels,
+            hyper_prior=hyper_prior,
             target_bpp=target_bpp,
             weight=rate_weight,
             hinge=entropy_hinge,
@@ -277,6 +287,7 @@ def combined_loss(
                 hyper_model,
                 hyper_levels=hyper_levels,
                 image_side=image_side,
+                hyper_prior=hyper_prior,
             )
             .detach()
             .cpu()
@@ -342,6 +353,7 @@ def combined_loss(
         used_entropy_rate=use_entropy_rate,
         used_categorical_rate=use_categorical_rate or use_hyper_rate,
         used_hyper_rate=use_hyper_rate,
+        used_learned_hyper_prior=hyper_prior is not None,
     )
     return total, metrics
 
@@ -389,6 +401,7 @@ def train_step(
     use_hyper_rate: bool = False,
     hyper_model: Optional[HyperpriorTableModel] = None,
     hyper_levels: int = 256,
+    hyper_prior: Optional[CategoricalEntropyModel] = None,
 ) -> TrainStepMetrics:
     """
     One optimizer step: compress → (optional STE quant) → decompress → loss.
@@ -405,7 +418,8 @@ def train_step(
     optimizer. When use_hyper_rate is True, STE is implied, categorical rate is
     replaced by hierarchical R(z_h)+R(indices|z_hat), and hyper_model params
     must be in the optimizer (mutually exclusive with use_categorical_rate /
-    use_entropy_rate).
+    use_entropy_rate). Optional hyper_prior (CategoricalEntropyModel over
+    hyper indices) replaces uniform side-info and must also be in the optimizer.
     """
     if use_entropy_rate and (use_categorical_rate or use_hyper_rate):
         raise ValueError("use_entropy_rate is mutually exclusive with categorical/hyper rate")
@@ -421,6 +435,8 @@ def train_step(
         categorical_model.train()
     if hyper_model is not None:
         hyper_model.train()
+    if hyper_prior is not None:
+        hyper_prior.train()
     if learned_quant is not None:
         learned_quant.train()
     optimizer.zero_grad(set_to_none=True)
@@ -463,6 +479,7 @@ def train_step(
         use_hyper_rate=use_hyper_rate,
         hyper_model=hyper_model,
         hyper_levels=hyper_levels,
+        hyper_prior=hyper_prior,
     )
     # Report STE if it was applied in the forward path (even when entropy owns the rate term)
     metrics.used_ste_quant = use_ste_quant
@@ -470,6 +487,7 @@ def train_step(
     metrics.used_learned_quant_scales = learned_quant is not None
     metrics.used_categorical_rate = use_categorical_rate or use_hyper_rate
     metrics.used_hyper_rate = use_hyper_rate
+    metrics.used_learned_hyper_prior = hyper_prior is not None
     loss.backward()
     optimizer.step()
     return metrics
@@ -491,6 +509,7 @@ def run_sketch_epochs(
     use_hyper_rate: bool = False,
     hyper_dim: int = 16,
     hyper_levels: int = 256,
+    use_learned_hyper_prior: bool = False,
 ) -> list[TrainStepMetrics]:
     """Tiny CPU-only dry run proving the loop closes (for demos / CI)."""
     if use_entropy_rate and (use_categorical_rate or use_hyper_rate):
@@ -518,6 +537,12 @@ def run_sketch_epochs(
             compact_dim, levels=quant_levels, hyper_dim=hyper_dim
         )
         params = params + list(hyper_model.parameters())
+    hyper_prior: Optional[CategoricalEntropyModel] = None
+    if use_learned_hyper_prior:
+        if not use_hyper_rate:
+            raise ValueError("use_learned_hyper_prior requires use_hyper_rate=True")
+        hyper_prior = CategoricalEntropyModel(hyper_dim, levels=hyper_levels)
+        params = params + list(hyper_prior.parameters())
     if use_learned_quant_scales:
         learned_quant = LearnedQuantAffine(compact_dim)
         params = params + list(learned_quant.parameters())
@@ -543,6 +568,7 @@ def run_sketch_epochs(
             use_hyper_rate=use_hyper_rate,
             hyper_model=hyper_model,
             hyper_levels=hyper_levels,
+            hyper_prior=hyper_prior,
         )
         history.append(metrics)
     return history
@@ -712,6 +738,11 @@ def main() -> None:
         help="Use hierarchical hyperprior rate R(z_h)+R(indices|z_hat) (implies STE; trains HyperpriorTableModel; exclusive with --categorical-rate / --entropy-rate).",
     )
     parser.add_argument(
+        "--learned-hyper-prior",
+        action="store_true",
+        help="With --hyper-rate: use a factorized categorical prior on quantized z_h instead of uniform H·log2(L_h) side-info (trains CategoricalEntropyModel(H, L_h)).",
+    )
+    parser.add_argument(
         "--hyper-dim",
         type=int,
         default=16,
@@ -736,6 +767,8 @@ def main() -> None:
         parser.error("--hyper-rate and --categorical-rate are mutually exclusive")
     if args.entropy_rate and (args.categorical_rate or args.hyper_rate):
         parser.error("--entropy-rate is mutually exclusive with --categorical-rate / --hyper-rate")
+    if args.learned_hyper_prior and not args.hyper_rate:
+        parser.error("--learned-hyper-prior requires --hyper-rate")
 
     print("MORPHOS bottleneck training sketch (mock latents, frozen-prior path not loaded)")
     print(f"rate_stats @ compact_dim={args.compact_dim}: {rate_stats(compact_dim=args.compact_dim)}")
@@ -767,6 +800,12 @@ def main() -> None:
             f"hierarchical hyperprior rate init (H={args.hyper_dim}, L_h={args.hyper_levels}): "
             f"{hyperprior_hierarchical_rate_stats(compact_dim=args.compact_dim, levels=args.quant_levels, hyper_dim=args.hyper_dim, hyper_levels=args.hyper_levels)}"
         )
+        if args.learned_hyper_prior:
+            print(
+                f"learned hyper prior: CategoricalEntropyModel(H={args.hyper_dim}, "
+                f"L_h={args.hyper_levels}) replaces uniform side-info "
+                f"(init still ~H·log2(L_h)={args.hyper_dim * __import__('math').log2(args.hyper_levels):.2f} bits)"
+            )
     if args.ans_hyper:
         print(
             f"hyperprior pack sketch (H={args.hyper_dim}, L_h={args.hyper_levels}): "
@@ -797,6 +836,10 @@ def main() -> None:
             args.compact_dim, levels=args.quant_levels, hyper_dim=args.hyper_dim
         )
         params = params + list(hyper_model.parameters())
+    hyper_prior = None
+    if args.learned_hyper_prior:
+        hyper_prior = CategoricalEntropyModel(args.hyper_dim, levels=args.hyper_levels)
+        params = params + list(hyper_prior.parameters())
     if args.learned_quant_scales:
         learned_quant = LearnedQuantAffine(args.compact_dim)
         params = params + list(learned_quant.parameters())
@@ -823,6 +866,7 @@ def main() -> None:
             use_hyper_rate=args.hyper_rate,
             hyper_model=hyper_model,
             hyper_levels=args.hyper_levels,
+            hyper_prior=hyper_prior,
         )
         history.append(metrics)
     first, last = history[0], history[-1]
@@ -837,6 +881,8 @@ def main() -> None:
         tags.append("categorical=True")
     if first.used_hyper_rate:
         tags.append("hyper_rate=True")
+    if first.used_learned_hyper_prior:
+        tags.append("learned_hyper_prior=True")
     tag_s = (" " + " ".join(tags)) if tags else ""
     print(
         f"step 0: recon_mse={first.recon_mse:.6f} bpp={first.rate_bpp:.5f} "

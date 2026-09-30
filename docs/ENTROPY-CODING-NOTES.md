@@ -33,7 +33,7 @@ bits-per-pixel on the wire
 |-------|----------------|--------------------|
 | Continuous code | Mock MLP output | Same, or VQ / residual |
 | Quantization | `quantize_uniform()` + STE + **`LearnedQuantAffine`** | Soft / residual / VQ refinements |
-| Rate proxy | FP32 bpp, `log2(L)` × dim, factorized Laplace, **categorical** `-log2 p(index)`, or **hierarchical hyperprior** R(z_h)+R(index\|z) | Spatial hyperprior / autoregressive entropy model |
+| Rate proxy | FP32 bpp, `log2(L)` × dim, factorized Laplace, **categorical** `-log2 p(index)`, or **hierarchical hyperprior** R(z_h)+R(index\|z) (+ optional **learned categorical prior on z_h**) | Spatial hyperprior / autoregressive entropy model |
 | Bitstream | **tabled rANS** + **self-describing pack** + **hyperprior pack** (z_h side-info) + **hierarchical hyperprior pack** (MRPH v3) | Multi-speed ANS, arithmetic, bits-back, spatial hyperprior |
 
 ## Uniform quantization sketch
@@ -202,8 +202,8 @@ CLI: `bottleneck_train_sketch.py --hyper-rate` (exclusive with
 
 `hyperprior_hierarchical_rate_stats` documents the untrained-init cost
 (uniform conditional + uniform side-info). A peaked synthesis lowers the
-conditional term; side-info stays `H · log2(L_h)` until a learned prior on
-z_h replaces the uniform alphabet.
+conditional term; pass `hyper_prior=` (CLI `--learned-hyper-prior`) to replace
+uniform side-info with a trainable categorical prior on the hyper indices.
 
 ## Hierarchical hyperprior ANS pack (MRPH v3)
 
@@ -229,11 +229,35 @@ payload is conditioned on `z_hat` the same way as
 (exclusive with `--ans-pack` / `--ans-hyper`; pairs cleanly with
 `--hyper-rate` using `fit_steps=0`).
 
+## Learned prior on quantized z_h (side-info rate)
+
+By default `hyperprior_hierarchical_bits` charges a **uniform** side-info cost
+`H · log2(L_h)` (detached). That matches an uninformative alphabet for the
+quantized hyper indices and does not train anything about `p(z_h)`.
+
+Pass `hyper_prior=CategoricalEntropyModel(hyper_dim, hyper_levels)` to replace
+that constant with a **factorized categorical** NLL over the STE hyper indices:
+
+```text
+h_idx = STE_quantize(analysis(logits))   # alphabet size L_h
+R(z_h) = Σ_i -log2 Categorical(hyper_prior.logits_i)[h_idx_i]
+R = R(z_h) + R(indices | z_hat)
+```
+
+- Untrained init is flat → same expected cost as uniform `H · log2(L_h)`.
+- Gradients update `hyper_prior.logits` only (hard hyper indices); analysis
+  still gets gradients through the conditional term via STE on `z_hat`.
+- Wire format (MRPH v3) is unchanged — still `H × u8` raw hyper indices on the
+  wire. ANS-coding those indices under the learned prior is a later pack step.
+
+CLI: `bottleneck_train_sketch.py --hyper-rate --learned-hyper-prior`
+(requires `--hyper-rate`; trains `CategoricalEntropyModel(H, L_h)` jointly).
+
 ## What to plug in next
 
 1. **Wire real VAE latents** into the sketch (`MockLatentBatch` → encode).
 2. **Spatial hyperprior** once the code is a feature map, not a flat vector.
-3. Learned prior on z_h (replace uniform side-info) + faster rANS on real latents.
+3. ANS-encode hyper indices under the learned prior (shrink measured side-info) + faster rANS on real latents.
 
 ## Out of scope (this note)
 

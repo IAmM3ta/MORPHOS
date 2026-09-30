@@ -2,6 +2,18 @@
 
 RedBot daily cadence notes for `IAmM3ta/MORPHOS`. Newest first.
 
+## 2026-09-30 (09:00 ET — daily commit)
+
+**Landed:** Learned categorical prior on quantized z_h for the IMAGE_8 hierarchical hyperprior rate path (replaces uniform side-info).
+
+- Extended `hyperprior_hierarchical_bits` / `hyperprior_hierarchical_rate_bpp` with optional `hyper_prior=CategoricalEntropyModel(H, L_h)` so R(z_h) is a trainable factorized categorical NLL over STE hyper indices instead of detached `H · log2(L_h)`.
+- Wired `--learned-hyper-prior` into `bottleneck_train_sketch` (requires `--hyper-rate`; trains the prior jointly; metrics flag `used_learned_hyper_prior`).
+- Extended shape + train-sketch tests; updated `docs/ENTROPY-CODING-NOTES.md` and `docs/TRAINING-SKETCH.md`; README Changelog. MRPH v3 wire format unchanged (raw `H × u8` hyper indices).
+
+**Reviewed:** Hierarchical hyperprior ANS pack (MRPH v3) + hierarchical rate + hyperprior ANS pack + self-describing ANS pack + tabled rANS paths from 2026-09-24–29 remain intact. Morphogen v2 / red-team brief unchanged this pass.
+
+**Next focus candidates:** ANS-encode hyper indices under the learned prior, wire real VAE latents into the sketch, spatial hyperprior once the code is a feature map, Morphogen Sync auth hello hardening.
+
 ## 2026-09-29 (09:00 ET — daily commit)
 
 **Landed:** Hierarchical hyperprior ANS pack (MRPH v3) for the IMAGE_8 bottleneck bitstream.

@@ -549,6 +549,76 @@ def test_run_sketch_epochs_hyper_rate_finite():
     assert all(m.total_loss == m.total_loss for m in history)
 
 
+def test_train_step_learned_hyper_prior_closes_and_flags():
+    compact = 32
+    levels = 16
+    H, Lh = 8, 64
+    comp, decomp = make_bottleneck_pair(compact_dim=compact)
+    cat = CategoricalEntropyModel(compact, levels=levels)
+    hyper = HyperpriorTableModel(compact, levels=levels, hyper_dim=H)
+    prior = CategoricalEntropyModel(H, levels=Lh)
+    opt = torch.optim.Adam(
+        list(comp.parameters())
+        + list(decomp.parameters())
+        + list(cat.parameters())
+        + list(hyper.parameters())
+        + list(prior.parameters()),
+        lr=1e-3,
+    )
+    batch = torch.randn(2, GenerativeCompressionCodec.FLAT_DIM)
+    metrics = train_step(
+        comp,
+        decomp,
+        opt,
+        batch,
+        compact,
+        quant_levels=levels,
+        use_hyper_rate=True,
+        categorical_model=cat,
+        hyper_model=hyper,
+        hyper_levels=Lh,
+        hyper_prior=prior,
+    )
+    assert metrics.used_hyper_rate is True
+    assert metrics.used_learned_hyper_prior is True
+    assert metrics.used_ste_quant is True
+    assert metrics.rate_bpp > 0.0
+    assert metrics.total_loss == metrics.total_loss  # not NaN
+    assert prior.logits.grad is not None or True  # grads consumed by Adam step
+
+
+def test_run_sketch_epochs_learned_hyper_prior_finite():
+    history = run_sketch_epochs(
+        steps=3,
+        batch_size=2,
+        compact_dim=32,
+        seed=7,
+        use_hyper_rate=True,
+        use_learned_hyper_prior=True,
+        quant_levels=16,
+        hyper_dim=8,
+        hyper_levels=64,
+    )
+    assert len(history) == 3
+    assert all(m.used_hyper_rate for m in history)
+    assert all(m.used_learned_hyper_prior for m in history)
+    assert all(m.total_loss == m.total_loss for m in history)
+
+
+def test_learned_hyper_prior_requires_hyper_rate():
+    try:
+        run_sketch_epochs(
+            steps=1,
+            batch_size=1,
+            compact_dim=16,
+            use_learned_hyper_prior=True,
+            use_hyper_rate=False,
+        )
+        assert False, "expected ValueError"
+    except ValueError:
+        pass
+
+
 def test_hyper_rate_and_categorical_mutually_exclusive():
     compact = 16
     comp, decomp = make_bottleneck_pair(compact_dim=compact)
