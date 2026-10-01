@@ -2,6 +2,18 @@
 
 RedBot daily cadence notes for `IAmM3ta/MORPHOS`. Newest first.
 
+## 2026-10-01 (09:00 ET — daily commit)
+
+**Landed:** ANS-coded hyper indices under the learned categorical prior (MRPH v4) for the IMAGE_8 hierarchical hyperprior pack.
+
+- Added `ans_hyper_hier_prior_pack_indices` / `ans_hyper_hier_prior_unpack_indices` / `hyperprior_hier_prior_pack_stats` in `generative_codec.py` (MRPH v4; replaces raw `H × u8` hyper side-info with tabled rANS under `CategoricalEntropyModel(H, L_h)`; meta reports `hyper_measured_bits` + savings vs v3).
+- Wired `--ans-hyper-hier-prior` into `bottleneck_train_sketch` (exclusive with other `--ans-*` packs; pairs with `--hyper-rate --learned-hyper-prior`).
+- Extended shape + train-sketch tests; updated `docs/ENTROPY-CODING-NOTES.md` and `docs/TRAINING-SKETCH.md`; README Changelog.
+
+**Reviewed:** Learned categorical prior on z_h + hierarchical hyperprior ANS pack (MRPH v3) + hierarchical rate + hyperprior ANS pack paths from 2026-09-27–30 remain intact. Morphogen v2 / red-team brief unchanged this pass.
+
+**Next focus candidates:** wire real VAE latents into the sketch, spatial hyperprior once the code is a feature map, Morphogen Sync auth hello hardening.
+
 ## 2026-09-30 (09:00 ET — daily commit)
 
 **Landed:** Learned categorical prior on quantized z_h for the IMAGE_8 hierarchical hyperprior rate path (replaces uniform side-info).

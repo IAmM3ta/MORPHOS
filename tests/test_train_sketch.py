@@ -688,3 +688,60 @@ def test_ans_check_one_code_hyper_hier_roundtrip():
     assert meta["sideinfo_mode"] == "hyper_hier"
     assert meta["pack_version"] == 3
     assert meta["sideinfo_saving_vs_per_dim"] > 0
+
+
+def test_ans_check_one_code_hyper_hier_prior_roundtrip():
+    import torch
+    from generative_codec import CategoricalEntropyModel, GenerativeCompressionCodec
+    from bottleneck_train_sketch import ans_check_one_code, make_bottleneck_pair, train_step
+
+    torch.manual_seed(0)
+    compact_dim = 32
+    levels = 16
+    H, Lh = 8, 64
+    compression, decompression = make_bottleneck_pair(compact_dim=compact_dim, hidden=64)
+    cat = CategoricalEntropyModel(compact_dim, levels=levels)
+    hyper = HyperpriorTableModel(compact_dim, levels=levels, hyper_dim=H)
+    prior = CategoricalEntropyModel(H, levels=Lh)
+    with torch.no_grad():
+        prior.logits.zero_()
+        prior.logits[:, 0] = 6.0
+    params = (
+        list(compression.parameters())
+        + list(decompression.parameters())
+        + list(cat.parameters())
+        + list(hyper.parameters())
+        + list(prior.parameters())
+    )
+    opt = torch.optim.Adam(params, lr=1e-3)
+    batch = torch.randn(2, GenerativeCompressionCodec.FLAT_DIM)
+    train_step(
+        compression,
+        decompression,
+        opt,
+        batch,
+        compact_dim,
+        quant_levels=levels,
+        use_hyper_rate=True,
+        categorical_model=cat,
+        hyper_model=hyper,
+        hyper_levels=Lh,
+        hyper_prior=prior,
+    )
+    meta = ans_check_one_code(
+        compression,
+        batch,
+        quant_levels=levels,
+        categorical_model=cat,
+        use_hyper_hier_prior=True,
+        hyper_model=hyper,
+        hyper_prior=prior,
+        hyper_dim=H,
+        hyper_levels=Lh,
+        hyper_fit_steps=0,
+    )
+    assert meta["roundtrip_ok"] is True
+    assert meta["used_hyper_hier_prior"] is True
+    assert meta["sideinfo_mode"] == "hyper_hier_prior"
+    assert meta["pack_version"] == 4
+    assert meta["hyper_payload_bytes"] >= 4

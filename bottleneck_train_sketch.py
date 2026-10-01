@@ -19,7 +19,9 @@ diffusion prior stay frozen. This module is a *shape-faithful sketch*:
     under synthesis(z_hat)), or hierarchical hyperprior rate via
     `--hyper-rate` (R(z_h)+R(indices|z_hat); trains the shared
     HyperpriorTableModel jointly), optionally with `--learned-hyper-prior`
-    (factorized categorical prior on quantized z_h replacing uniform side-info)
+    (factorized categorical prior on quantized z_h replacing uniform side-info),
+    or hierarchical+prior ANS pack via `--ans-hyper-hier-prior` (MRPH v4;
+    ANS-codes hyper indices under the learned prior instead of raw H×u8)
 
 Swap `MockLatentBatch` for real `vae.encode(...).latent_dist.sample()` and
 attach a perceptual / diffusion-aware reconstruction loss when moving off the
@@ -45,6 +47,8 @@ from generative_codec import (
     ans_decode_indices,
     ans_encode_indices,
     ans_hyper_hier_pack_indices,
+    ans_hyper_hier_prior_pack_indices,
+    ans_hyper_hier_prior_unpack_indices,
     ans_hyper_hier_unpack_indices,
     ans_hyper_pack_indices,
     ans_hyper_unpack_indices,
@@ -53,6 +57,7 @@ from generative_codec import (
     categorical_rate_stats,
     factorized_rate_stats,
     hyperprior_hier_pack_stats,
+    hyperprior_hier_prior_pack_stats,
     hyperprior_hierarchical_rate_bpp,
     hyperprior_hierarchical_rate_stats,
     hyperprior_pack_stats,
@@ -585,7 +590,9 @@ def ans_check_one_code(
     use_pack: bool = False,
     use_hyper: bool = False,
     use_hyper_hier: bool = False,
+    use_hyper_hier_prior: bool = False,
     hyper_model: Optional[HyperpriorTableModel] = None,
+    hyper_prior: Optional[CategoricalEntropyModel] = None,
     hyper_dim: int = 16,
     hyper_levels: int = 256,
     hyper_fit_steps: int = 64,
@@ -599,12 +606,16 @@ def ans_check_one_code(
     `ans_unpack_indices` (no live model). When `use_hyper` is True, wraps with
     a quantized hyperlatent side-info pack (needs shared HyperpriorTableModel).
     When `use_hyper_hier` is True, uses MRPH v3 hierarchical path (z_h then
-    indices under synthesis(z_hat)). Returns encode meta plus round-trip OK.
+    indices under synthesis(z_hat)). When `use_hyper_hier_prior` is True, uses
+    MRPH v4 (ANS-codes hyper indices under `hyper_prior`). Returns encode meta
+    plus round-trip OK.
     """
     if categorical_model is None:
         raise ValueError("categorical_model required for ans_check_one_code")
-    if sum(bool(x) for x in (use_pack, use_hyper, use_hyper_hier)) > 1:
-        raise ValueError("use_pack, use_hyper, and use_hyper_hier are mutually exclusive")
+    if sum(bool(x) for x in (use_pack, use_hyper, use_hyper_hier, use_hyper_hier_prior)) > 1:
+        raise ValueError(
+            "use_pack, use_hyper, use_hyper_hier, and use_hyper_hier_prior are mutually exclusive"
+        )
     compression.eval()
     with torch.no_grad():
         code = compression(batch_flat[:1])
@@ -615,14 +626,28 @@ def ans_check_one_code(
                 code, levels=quant_levels, code_min=-1.0, code_max=1.0
             )
         indices = qmeta["indices"].reshape(-1)
-    if use_hyper or use_hyper_hier:
+    if use_hyper or use_hyper_hier or use_hyper_hier_prior:
         if hyper_model is None:
             hyper_model = HyperpriorTableModel(
                 categorical_model.compact_dim,
                 levels=quant_levels,
                 hyper_dim=hyper_dim,
             )
-        if use_hyper_hier:
+        if use_hyper_hier_prior:
+            if hyper_prior is None:
+                hyper_prior = CategoricalEntropyModel(hyper_dim, levels=hyper_levels)
+            packed, meta = ans_hyper_hier_prior_pack_indices(
+                indices,
+                categorical_model,
+                hyper_model,
+                hyper_prior,
+                hyper_levels=hyper_levels,
+                fit_steps=hyper_fit_steps,
+            )
+            decoded, umeta = ans_hyper_hier_prior_unpack_indices(
+                packed, hyper_model, hyper_prior
+            )
+        elif use_hyper_hier:
             packed, meta = ans_hyper_hier_pack_indices(
                 indices,
                 categorical_model,
@@ -646,6 +671,7 @@ def ans_check_one_code(
         meta["used_pack"] = True
         meta["used_hyper"] = bool(use_hyper)
         meta["used_hyper_hier"] = bool(use_hyper_hier)
+        meta["used_hyper_hier_prior"] = bool(use_hyper_hier_prior)
         return meta
     with torch.no_grad():
         if use_pack:
@@ -657,6 +683,7 @@ def ans_check_one_code(
             meta["used_pack"] = True
             meta["used_hyper"] = False
             meta["used_hyper_hier"] = False
+            meta["used_hyper_hier_prior"] = False
         else:
             payload, meta = ans_encode_indices(indices, categorical_model)
             decoded = ans_decode_indices(payload, categorical_model)
@@ -665,6 +692,7 @@ def ans_check_one_code(
             meta["used_pack"] = False
             meta["used_hyper"] = False
             meta["used_hyper_hier"] = False
+            meta["used_hyper_hier_prior"] = False
     return meta
 
 
@@ -725,12 +753,17 @@ def main() -> None:
     parser.add_argument(
         "--ans-hyper",
         action="store_true",
-        help="Like --ans-check but pack with quantized hyperlatent side-info (HyperpriorTableModel). Exclusive with --ans-pack / --ans-hyper-hier. Implies --ans-check.",
+        help="Like --ans-check but pack with quantized hyperlatent side-info (HyperpriorTableModel). Exclusive with --ans-pack / --ans-hyper-hier / --ans-hyper-hier-prior. Implies --ans-check.",
     )
     parser.add_argument(
         "--ans-hyper-hier",
         action="store_true",
-        help="Like --ans-hyper but MRPH v3 hierarchical path (z_h + indices under synthesis(z_hat)). Exclusive with --ans-pack / --ans-hyper. Implies --ans-check.",
+        help="Like --ans-hyper but MRPH v3 hierarchical path (z_h + indices under synthesis(z_hat)). Exclusive with --ans-pack / --ans-hyper / --ans-hyper-hier-prior. Implies --ans-check.",
+    )
+    parser.add_argument(
+        "--ans-hyper-hier-prior",
+        action="store_true",
+        help="MRPH v4: hierarchical pack with ANS-coded hyper indices under a learned prior (implies --learned-hyper-prior + --ans-check; exclusive with other --ans-* packs).",
     )
     parser.add_argument(
         "--hyper-rate",
@@ -746,20 +779,29 @@ def main() -> None:
         "--hyper-dim",
         type=int,
         default=16,
-        help="Hyperlatent size H for --ans-hyper / --ans-hyper-hier / --hyper-rate (default 16).",
+        help="Hyperlatent size H for --ans-hyper / --ans-hyper-hier / --ans-hyper-hier-prior / --hyper-rate (default 16).",
     )
     parser.add_argument(
         "--hyper-levels",
         type=int,
         default=256,
-        help="Uniform codebook size for quantized z_h when --ans-hyper / --ans-hyper-hier / --hyper-rate (default 256).",
+        help="Uniform codebook size for quantized z_h when --ans-hyper / --ans-hyper-hier / --ans-hyper-hier-prior / --hyper-rate (default 256).",
     )
     args = parser.parse_args()
 
-    pack_flags = [args.ans_pack, args.ans_hyper, args.ans_hyper_hier]
+    pack_flags = [args.ans_pack, args.ans_hyper, args.ans_hyper_hier, args.ans_hyper_hier_prior]
     if sum(bool(x) for x in pack_flags) > 1:
-        parser.error("--ans-pack, --ans-hyper, and --ans-hyper-hier are mutually exclusive")
-    if args.ans_pack or args.ans_hyper or args.ans_hyper_hier:
+        parser.error(
+            "--ans-pack, --ans-hyper, --ans-hyper-hier, and --ans-hyper-hier-prior are mutually exclusive"
+        )
+    if args.ans_hyper_hier_prior:
+        # v4 pack needs a hyper prior; enable learned-hyper-prior + hyper-rate-friendly path
+        args.learned_hyper_prior = True
+        if not args.hyper_rate:
+            # Still need categorical model for indices; hyper-rate optional but prior needs H,L_h
+            pass
+        args.ans_check = True
+    if args.ans_pack or args.ans_hyper or args.ans_hyper_hier or args.ans_hyper_hier_prior:
         args.ans_check = True
     if args.ans_check and not args.hyper_rate:
         args.categorical_rate = True
@@ -767,8 +809,8 @@ def main() -> None:
         parser.error("--hyper-rate and --categorical-rate are mutually exclusive")
     if args.entropy_rate and (args.categorical_rate or args.hyper_rate):
         parser.error("--entropy-rate is mutually exclusive with --categorical-rate / --hyper-rate")
-    if args.learned_hyper_prior and not args.hyper_rate:
-        parser.error("--learned-hyper-prior requires --hyper-rate")
+    if args.learned_hyper_prior and not args.hyper_rate and not args.ans_hyper_hier_prior:
+        parser.error("--learned-hyper-prior requires --hyper-rate (or --ans-hyper-hier-prior)")
 
     print("MORPHOS bottleneck training sketch (mock latents, frozen-prior path not loaded)")
     print(f"rate_stats @ compact_dim={args.compact_dim}: {rate_stats(compact_dim=args.compact_dim)}")
@@ -816,6 +858,11 @@ def main() -> None:
             f"hierarchical hyperprior pack sketch (H={args.hyper_dim}, L_h={args.hyper_levels}): "
             f"{hyperprior_hier_pack_stats(compact_dim=args.compact_dim, levels=args.quant_levels, hyper_dim=args.hyper_dim, hyper_levels=args.hyper_levels)}"
         )
+    if args.ans_hyper_hier_prior:
+        print(
+            f"hierarchical+prior hyperprior pack sketch (MRPH v4; H={args.hyper_dim}, L_h={args.hyper_levels}): "
+            f"{hyperprior_hier_prior_pack_stats(compact_dim=args.compact_dim, levels=args.quant_levels, hyper_dim=args.hyper_dim, hyper_levels=args.hyper_levels)}"
+        )
     # Inline sketch so --ans-check / --ans-pack can reuse the trained categorical prior
     g = torch.Generator().manual_seed(args.seed)
     torch.manual_seed(args.seed)
@@ -831,13 +878,13 @@ def main() -> None:
     if args.categorical_rate or args.hyper_rate or args.ans_check:
         categorical_model = CategoricalEntropyModel(args.compact_dim, levels=args.quant_levels)
         params = params + list(categorical_model.parameters())
-    if args.hyper_rate or args.ans_hyper or args.ans_hyper_hier:
+    if args.hyper_rate or args.ans_hyper or args.ans_hyper_hier or args.ans_hyper_hier_prior:
         hyper_model = HyperpriorTableModel(
             args.compact_dim, levels=args.quant_levels, hyper_dim=args.hyper_dim
         )
         params = params + list(hyper_model.parameters())
     hyper_prior = None
-    if args.learned_hyper_prior:
+    if args.learned_hyper_prior or args.ans_hyper_hier_prior:
         hyper_prior = CategoricalEntropyModel(args.hyper_dim, levels=args.hyper_levels)
         params = params + list(hyper_prior.parameters())
     if args.learned_quant_scales:
@@ -864,9 +911,9 @@ def main() -> None:
             use_categorical_rate=args.categorical_rate,
             categorical_model=categorical_model,
             use_hyper_rate=args.hyper_rate,
-            hyper_model=hyper_model,
+            hyper_model=hyper_model if args.hyper_rate else None,
             hyper_levels=args.hyper_levels,
-            hyper_prior=hyper_prior,
+            hyper_prior=hyper_prior if args.hyper_rate else None,
         )
         history.append(metrics)
     first, last = history[0], history[-1]
@@ -903,12 +950,16 @@ def main() -> None:
             use_pack=args.ans_pack,
             use_hyper=args.ans_hyper,
             use_hyper_hier=args.ans_hyper_hier,
+            use_hyper_hier_prior=args.ans_hyper_hier_prior,
             hyper_model=hyper_model,
+            hyper_prior=hyper_prior,
             hyper_dim=args.hyper_dim,
             hyper_levels=args.hyper_levels,
             hyper_fit_steps=0 if args.hyper_rate else 64,
         )
-        if args.ans_hyper_hier:
+        if args.ans_hyper_hier_prior:
+            mode = "hyper_hier_prior"
+        elif args.ans_hyper_hier:
             mode = "hyper_hier"
         elif args.ans_hyper:
             mode = "hyper"

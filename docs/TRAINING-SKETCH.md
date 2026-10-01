@@ -28,7 +28,7 @@ VAE decode / LPIPS / diffusion score term
 | Term | Sketch | Production upgrade |
 |------|--------|--------------------|
 | Reconstruction | Latent MSE on flat codes | VAE-decoded L1/L2 + LPIPS; optional diffusion denoising score |
-| Rate | FP32 bpp hinge, STE + uniform `log2(L)` (+ optional **`LearnedQuantAffine`**), factorized Laplace `--entropy-rate`, **categorical** `--categorical-rate`, **hierarchical hyperprior** `--hyper-rate` (+ optional **`--learned-hyper-prior`** on z_h), **tabled rANS** `--ans-check`, **ANS pack** `--ans-pack`, **hyperprior pack** `--ans-hyper` / **hier pack** `--ans-hyper-hier` | Spatial hyperprior / bits-back / faster ANS — see [ENTROPY-CODING-NOTES.md](./ENTROPY-CODING-NOTES.md) |
+| Rate | FP32 bpp hinge, STE + uniform `log2(L)` (+ optional **`LearnedQuantAffine`**), factorized Laplace `--entropy-rate`, **categorical** `--categorical-rate`, **hierarchical hyperprior** `--hyper-rate` (+ optional **`--learned-hyper-prior`** on z_h), **tabled rANS** `--ans-check`, **ANS pack** `--ans-pack`, **hyperprior pack** `--ans-hyper` / **hier pack** `--ans-hyper-hier` / **hier+prior pack** `--ans-hyper-hier-prior` (MRPH v4) | Spatial hyperprior / bits-back / faster ANS — see [ENTROPY-CODING-NOTES.md](./ENTROPY-CODING-NOTES.md) |
 | Data | `MockLatentBatch` Gaussian | Real `vae.encode` latents from image datasets |
 
 ## Run (CPU, no HF download)
@@ -49,6 +49,7 @@ PYTHONPATH=. python bottleneck_train_sketch.py --steps 8 --ans-hyper-hier --hype
 PYTHONPATH=. python bottleneck_train_sketch.py --steps 8 --hyper-rate --ans-hyper-hier --hyper-dim 16 --quant-levels 256
 PYTHONPATH=. python bottleneck_train_sketch.py --steps 8 --hyper-rate --hyper-dim 16 --quant-levels 256
 PYTHONPATH=. python bottleneck_train_sketch.py --steps 8 --hyper-rate --learned-hyper-prior --hyper-dim 16 --quant-levels 256
+PYTHONPATH=. python bottleneck_train_sketch.py --steps 8 --hyper-rate --learned-hyper-prior --ans-hyper-hier-prior --hyper-dim 16 --quant-levels 256
 PYTHONPATH=. pytest tests/test_train_sketch.py -q
 ```
 

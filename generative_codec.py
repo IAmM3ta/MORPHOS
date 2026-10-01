@@ -20,7 +20,9 @@ Rate note (illustrative FP32, no entropy coding):
   hyperprior packs (`ans_hyper_pack_indices`), hierarchical hyperprior rate
   (`hyperprior_hierarchical_rate_bpp`), optional learned categorical prior on
   quantized z_h (replace uniform side-info), hierarchical hyperprior ANS packs
-  (`ans_hyper_hier_pack_indices`, MRPH v3), and docs/ENTROPY-CODING-NOTES.md.
+  (`ans_hyper_hier_pack_indices`, MRPH v3), ANS-coded hyper
+ indices under a learned prior (`ans_hyper_hier_prior_pack_indices`, MRPH v4),
+ and docs/ENTROPY-CODING-NOTES.md.
 """
 
 from __future__ import annotations
@@ -882,6 +884,8 @@ ANS_PACK_VERSION_HYPER = 2
 ANS_SIDEINFO_HYPER = 2
 ANS_PACK_VERSION_HYPER_HIER = 3
 ANS_SIDEINFO_HYPER_HIER = 3
+ANS_PACK_VERSION_HYPER_HIER_PRIOR = 4
+ANS_SIDEINFO_HYPER_HIER_PRIOR = 4
 
 
 class HyperpriorTableModel(nn.Module):
@@ -1677,6 +1681,296 @@ def hyperprior_hier_pack_stats(
         "MRPH v3 hierarchical hyperprior pack: quantized z_h + conditional "
         "rANS; measured_pack_bits after ans_hyper_hier_pack_indices"
     )
+    return out
+
+
+
+# ---------------------------------------------------------------------------
+# Hierarchical hyperprior ANS pack with learned prior on z_h (MRPH v4)
+# ---------------------------------------------------------------------------
+# Wire format v4 (little-endian), sideinfo_mode = HYPER_HIER_PRIOR:
+#   magic[4]="MRPH" | version u8=4 | scale_bits u8
+#   compact_dim u16 | levels u16 | sideinfo_mode u8=4
+#   hyper_dim u16 | hyper_levels u16
+#   hyper_min f32 | hyper_max f32
+#   hyper_payload_len u32 | hyper_payload bytes   # rANS of H indices under hyper_prior
+#   payload_len u32 | payload bytes              # rANS of STE indices under synthesis(z_hat)
+#
+# Same hierarchical analysis→quantize→synthesis path as MRPH v3, but the
+# quantized hyper indices are themselves ANS-coded under a shared
+# CategoricalEntropyModel(H, L_h) instead of raw H × u8. Decode needs both
+# HyperpriorTableModel and the hyper prior. Flat prior ≈ uniform side-info
+# (+ small ANS state overhead); a peaked prior shrinks measured side-info.
+
+
+def ans_hyper_hier_prior_pack_indices(
+    indices: torch.Tensor,
+    model: "CategoricalEntropyModel",
+    hyper: "HyperpriorTableModel",
+    hyper_prior: "CategoricalEntropyModel",
+    *,
+    scale_bits: int = ANS_SCALE_BITS,
+    hyper_levels: int = 256,
+    fit_steps: int = 0,
+) -> tuple[bytes, dict]:
+    """
+    MRPH v4 ANS pack: ANS-coded hyper indices under a learned prior + hierarchical payload.
+
+    Follows the same Ballé-style hierarchical path as `ans_hyper_hier_pack_indices`
+    (analysis → quantize z_h → synthesis tables → conditional rANS of STE indices),
+    but replaces raw `H × u8` hyper side-info with a tabled rANS bitstream of the
+    hyper indices under `hyper_prior` (must match geometry H × L_h). Decode needs
+    shared `HyperpriorTableModel` + `hyper_prior` weights.
+    """
+    import struct
+
+    if hyper.compact_dim != model.compact_dim or hyper.levels != model.levels:
+        raise ValueError("HyperpriorTableModel geometry must match CategoricalEntropyModel")
+    if hyper_levels < 2 or hyper_levels > 256:
+        raise ValueError("hyper_levels must be in [2, 256]")
+    if hyper_prior.compact_dim != hyper.hyper_dim or hyper_prior.levels != hyper_levels:
+        raise ValueError(
+            "hyper_prior geometry must be CategoricalEntropyModel"
+            f"(hyper_dim={hyper.hyper_dim}, levels={hyper_levels})"
+        )
+    if indices.ndim != 1:
+        raise ValueError("ans_hyper_hier_prior_pack_indices expects a 1-D index vector (D,)")
+    if indices.shape[0] != model.compact_dim:
+        raise ValueError(
+            f"indices length {indices.shape[0]} != compact_dim {model.compact_dim}"
+        )
+
+    if fit_steps > 0:
+        fit_mse = hyper.fit_to_logits(model.logits.detach(), steps=fit_steps)
+    else:
+        fit_mse = None
+
+    with torch.no_grad():
+        z = hyper.encode_hyper(model.logits.detach())
+        h_idx, z_hat, qmeta = quantize_hyperlatent(z, levels=hyper_levels)
+        logits_hat = hyper.decode_logits(z_hat)
+        pmf = torch.softmax(logits_hat, dim=-1)
+        pmf = 0.99 * pmf + 0.01 / float(model.levels)
+        freqs = _pmf_to_freqs(pmf, scale_bits=scale_bits)
+        idx_list = indices.long().clamp(0, model.levels - 1).tolist()
+        freqs_rows = [[int(x) for x in row] for row in freqs.tolist()]
+        payload = ans_encode_symbols(idx_list, freqs_rows, scale_bits=scale_bits)
+
+        # ANS-code hyper indices under the learned prior (shrinks vs raw H×u8 when peaked)
+        hyper_payload, hyper_enc_meta = ans_encode_indices(
+            h_idx.long(), hyper_prior, scale_bits=scale_bits
+        )
+
+        hier_total, hier_meta = hyperprior_hierarchical_bits(
+            indices.long(),
+            model,
+            hyper,
+            hyper_levels=hyper_levels,
+            use_ste_z=True,
+            hyper_prior=hyper_prior,
+        )
+        expected_hier_bits = float(hier_total.cpu())
+        expected_cat_bits = float(model.total_bits(indices.long()).cpu())
+
+    header = bytearray()
+    header.extend(ANS_PACK_MAGIC)
+    header.append(ANS_PACK_VERSION_HYPER_HIER_PRIOR)
+    header.append(int(scale_bits))
+    header.extend(int(model.compact_dim).to_bytes(2, "little"))
+    header.extend(int(model.levels).to_bytes(2, "little"))
+    header.append(ANS_SIDEINFO_HYPER_HIER_PRIOR)
+    header.extend(int(hyper.hyper_dim).to_bytes(2, "little"))
+    header.extend(int(hyper_levels).to_bytes(2, "little"))
+    header.extend(struct.pack("<ff", float(qmeta["z_min"]), float(qmeta["z_max"])))
+    header.extend(len(hyper_payload).to_bytes(4, "little"))
+    header.extend(hyper_payload)
+    header.extend(len(payload).to_bytes(4, "little"))
+    packed = bytes(header) + payload
+    # Side-info = everything except the conditional STE payload
+    sideinfo_bytes = len(packed) - len(payload)
+    # v3 raw hyper indices side-info geometry (for saving comparison)
+    raw_v3_sideinfo = 11 + 2 + 2 + 8 + hyper.hyper_dim + 4  # through payload_len
+    raw_per_dim = 11 + model.compact_dim * model.levels * 2 + 4
+    raw_shared = 11 + model.levels * 2 + 4
+    meta = {
+        "scale_bits": scale_bits,
+        "compact_dim": model.compact_dim,
+        "levels": model.levels,
+        "pack_version": ANS_PACK_VERSION_HYPER_HIER_PRIOR,
+        "sideinfo_mode": "hyper_hier_prior",
+        "hyper_dim": hyper.hyper_dim,
+        "hyper_levels": hyper_levels,
+        "z_min": qmeta["z_min"],
+        "z_max": qmeta["z_max"],
+        "sideinfo_bytes": sideinfo_bytes,
+        "hyper_payload_bytes": len(hyper_payload),
+        "hyper_measured_bits": float(hyper_enc_meta["measured_bits"]),
+        "hyper_expected_nll_bits": float(hyper_enc_meta["expected_nll_bits"]),
+        "payload_bytes": len(payload),
+        "pack_bytes": len(packed),
+        "measured_pack_bits": len(packed) * 8.0,
+        "measured_bits": len(payload) * 8.0,
+        "expected_nll_bits": expected_hier_bits,
+        "expected_categorical_nll_bits": expected_cat_bits,
+        "expected_hier_sideinfo_bits": hier_meta["sideinfo_bits"],
+        "expected_hier_conditional_bits": hier_meta["conditional_bits"],
+        "used_learned_hyper_prior": True,
+        "overhead_bits": len(packed) * 8.0 - expected_hier_bits,
+        "raw_v3_sideinfo_bytes": raw_v3_sideinfo,
+        "sideinfo_saving_vs_v3_raw": raw_v3_sideinfo - sideinfo_bytes,
+        "raw_per_dim_sideinfo_bytes": raw_per_dim,
+        "raw_shared_sideinfo_bytes": raw_shared,
+        "sideinfo_saving_vs_per_dim": raw_per_dim - sideinfo_bytes,
+        "fit_mse": fit_mse,
+        "note": (
+            "hierarchical hyperprior ANS pack with learned prior on z_h "
+            "(MRPH v4; ANS-coded hyper indices + conditional ryg_rans)"
+        ),
+    }
+    return packed, meta
+
+
+def ans_hyper_hier_prior_unpack_indices(
+    packed: bytes,
+    hyper: "HyperpriorTableModel",
+    hyper_prior: "CategoricalEntropyModel",
+    *,
+    scale_bits: Optional[int] = None,
+) -> tuple[torch.Tensor, dict]:
+    """
+    Decode a v4 hierarchical+prior pack using shared HyperpriorTableModel + hyper_prior.
+
+    Returns (indices long (D,), meta).
+    """
+    import struct
+
+    if len(packed) < 4 + 1 + 1 + 2 + 2 + 1 + 2 + 2 + 8 + 4 + 4:
+        raise ValueError("hier-prior hyper ANS pack too short")
+    if packed[0:4] != ANS_PACK_MAGIC:
+        raise ValueError(f"bad ANS pack magic {packed[0:4]!r}")
+    version = packed[4]
+    if version != ANS_PACK_VERSION_HYPER_HIER_PRIOR:
+        raise ValueError(
+            f"expected hier-prior hyper pack version {ANS_PACK_VERSION_HYPER_HIER_PRIOR}, "
+            f"got {version}"
+        )
+    file_scale = packed[5]
+    if scale_bits is None:
+        scale_bits = file_scale
+    elif scale_bits != file_scale:
+        raise ValueError("scale_bits mismatch")
+    compact_dim = int.from_bytes(packed[6:8], "little")
+    levels = int.from_bytes(packed[8:10], "little")
+    mode = packed[10]
+    if mode != ANS_SIDEINFO_HYPER_HIER_PRIOR:
+        raise ValueError(f"expected HYPER_HIER_PRIOR sideinfo_mode, got {mode}")
+    hyper_dim = int.from_bytes(packed[11:13], "little")
+    hyper_levels = int.from_bytes(packed[13:15], "little")
+    z_min, z_max = struct.unpack("<ff", packed[15:23])
+    pos = 23
+    if hyper.compact_dim != compact_dim or hyper.levels != levels:
+        raise ValueError("HyperpriorTableModel geometry does not match pack header")
+    if hyper.hyper_dim != hyper_dim:
+        raise ValueError("HyperpriorTableModel hyper_dim does not match pack header")
+    if hyper_prior.compact_dim != hyper_dim or hyper_prior.levels != hyper_levels:
+        raise ValueError("hyper_prior geometry does not match pack header")
+    if pos + 4 > len(packed):
+        raise ValueError("hier-prior pack missing hyper payload length")
+    hyper_payload_len = int.from_bytes(packed[pos : pos + 4], "little")
+    pos += 4
+    hyper_payload = packed[pos : pos + hyper_payload_len]
+    if len(hyper_payload) != hyper_payload_len:
+        raise ValueError("hier-prior hyper payload truncated")
+    pos += hyper_payload_len
+    if pos + 4 > len(packed):
+        raise ValueError("hier-prior pack missing payload length")
+    payload_len = int.from_bytes(packed[pos : pos + 4], "little")
+    pos += 4
+    payload = packed[pos : pos + payload_len]
+    if len(payload) != payload_len:
+        raise ValueError("hier-prior pack payload truncated")
+    if pos + payload_len != len(packed):
+        raise ValueError("hier-prior pack has trailing junk")
+
+    h_idx = ans_decode_indices(hyper_payload, hyper_prior, scale_bits=scale_bits)
+    if h_idx.numel() != hyper_dim:
+        raise ValueError(f"decoded hyper length {h_idx.numel()} != hyper_dim {hyper_dim}")
+    span = float(z_max) - float(z_min)
+    if span <= 0:
+        span = 1e-3
+    z_hat = float(z_min) + h_idx.float() * (span / float(hyper_levels - 1))
+    with torch.no_grad():
+        logits_hat = hyper.decode_logits(z_hat)
+        pmf = torch.softmax(logits_hat, dim=-1)
+        pmf = 0.99 * pmf + 0.01 / float(levels)
+        freqs = _pmf_to_freqs(pmf, scale_bits=scale_bits)
+        freqs_rows = [[int(x) for x in row] for row in freqs.tolist()]
+        symbols = ans_decode_symbols(payload, freqs_rows, scale_bits=scale_bits)
+    if len(symbols) != compact_dim:
+        raise ValueError(f"decoded length {len(symbols)} != compact_dim {compact_dim}")
+    indices = torch.tensor(symbols, dtype=torch.long)
+    meta = {
+        "pack_version": version,
+        "scale_bits": scale_bits,
+        "compact_dim": compact_dim,
+        "levels": levels,
+        "sideinfo_mode": "hyper_hier_prior",
+        "hyper_dim": hyper_dim,
+        "hyper_levels": hyper_levels,
+        "z_min": float(z_min),
+        "z_max": float(z_max),
+        "hyper_payload_bytes": hyper_payload_len,
+        "sideinfo_bytes": len(packed) - payload_len,
+        "payload_bytes": payload_len,
+        "pack_bytes": len(packed),
+        "measured_pack_bits": len(packed) * 8.0,
+        "used_learned_hyper_prior": True,
+    }
+    return indices, meta
+
+
+def hyperprior_hier_prior_pack_stats(
+    compact_dim: int = 256,
+    levels: int = 256,
+    hyper_dim: int = 16,
+    hyper_levels: int = 256,
+    image_side: int = 512,
+    *,
+    measured_pack_bits: Optional[float] = None,
+    sideinfo_bytes: Optional[int] = None,
+    hyper_payload_bits: Optional[float] = None,
+) -> dict:
+    """
+    Illustrative bpp / side-info comparison for MRPH v4 (ANS-coded hyper indices).
+
+    Contrasts ANS-coded hyper side-info under a learned prior with v3 raw H×u8
+    and v1 per-dim frequency tables. Expected hierarchical NLL uses learned
+    side-info at flat-prior init (= uniform H·log2(L_h)).
+    """
+    base = hyperprior_hier_pack_stats(
+        compact_dim=compact_dim,
+        levels=levels,
+        hyper_dim=hyper_dim,
+        hyper_levels=hyper_levels,
+        image_side=image_side,
+        measured_pack_bits=measured_pack_bits,
+        sideinfo_bytes=sideinfo_bytes,
+    )
+    pixels = float(image_side * image_side)
+    # v3 raw: header through H×u8 + payload_len
+    raw_v3_si = 11 + 2 + 2 + 8 + hyper_dim + 4
+    out = dict(base)
+    out["pack_version"] = ANS_PACK_VERSION_HYPER_HIER_PRIOR
+    out["sideinfo_mode"] = "hyper_hier_prior"
+    out["raw_v3_sideinfo_bytes"] = raw_v3_si
+    out["note"] = (
+        "MRPH v4 hierarchical hyperprior pack with ANS-coded hyper indices "
+        "under a learned prior; measured_pack_bits after "
+        "ans_hyper_hier_prior_pack_indices"
+    )
+    if hyper_payload_bits is not None:
+        out["hyper_payload_bits"] = float(hyper_payload_bits)
+        out["hyper_payload_bits_per_pixel"] = float(hyper_payload_bits) / pixels
     return out
 
 

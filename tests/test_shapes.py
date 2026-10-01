@@ -689,3 +689,126 @@ def test_hyperprior_hier_pack_stats_with_measurement():
     assert s["sideinfo_bytes"] == 40
     assert abs(s["sideinfo_bits"] - 320.0) < 1e-9
     assert s["pack_version"] == 3
+
+
+def test_ans_hyper_hier_prior_pack_roundtrip_and_sideinfo():
+    """MRPH v4: ANS-coded hyper indices under learned prior round-trip + saving vs v3."""
+    import torch
+    from generative_codec import (
+        ANS_PACK_VERSION_HYPER_HIER_PRIOR,
+        CategoricalEntropyModel,
+        HyperpriorTableModel,
+        ans_hyper_hier_pack_indices,
+        ans_hyper_hier_prior_pack_indices,
+        ans_hyper_hier_prior_unpack_indices,
+        ans_hyper_hier_unpack_indices,
+        hyperprior_hier_prior_pack_stats,
+        quantize_hyperlatent,
+    )
+
+    torch.manual_seed(4)
+    D, L, H, Lh = 48, 16, 8, 64
+    peaked = CategoricalEntropyModel(D, levels=L)
+    with torch.no_grad():
+        peaked.logits.zero_()
+        for d in range(D):
+            peaked.logits[d, d % L] = 4.0
+    idx = torch.tensor([d % L for d in range(D)], dtype=torch.long)
+
+    hyper = HyperpriorTableModel(D, levels=L, hyper_dim=H)
+    # Fit bridge once so v3/v4 share the same z_h geometry
+    hyper.fit_to_logits(peaked.logits.detach(), steps=80)
+    with torch.no_grad():
+        z = hyper.encode_hyper(peaked.logits.detach())
+        h_idx, _, _ = quantize_hyperlatent(z, levels=Lh)
+
+    # Flat prior ≈ uniform side-info
+    prior_flat = CategoricalEntropyModel(H, levels=Lh)
+    packed_flat, meta_flat = ans_hyper_hier_prior_pack_indices(
+        idx, peaked, hyper, prior_flat, hyper_levels=Lh, fit_steps=0
+    )
+    packed_v3, meta_v3 = ans_hyper_hier_pack_indices(
+        idx, peaked, hyper, hyper_levels=Lh, fit_steps=0
+    )
+    assert meta_flat["sideinfo_mode"] == "hyper_hier_prior"
+    assert meta_flat["pack_version"] == ANS_PACK_VERSION_HYPER_HIER_PRIOR
+    assert meta_flat["used_learned_hyper_prior"] is True
+    assert abs(meta_flat["expected_hier_sideinfo_bits"] - meta_v3["expected_hier_sideinfo_bits"]) < 1e-2
+
+    # Peak prior on the actual hyper indices so ANS shrinks vs raw H×u8
+    prior = CategoricalEntropyModel(H, levels=Lh)
+    with torch.no_grad():
+        prior.logits.zero_()
+        for i, s in enumerate(h_idx.tolist()):
+            prior.logits[i, int(s)] = 8.0
+    packed_v4, meta_v4 = ans_hyper_hier_prior_pack_indices(
+        idx, peaked, hyper, prior, hyper_levels=Lh, fit_steps=0
+    )
+    assert meta_v4["hyper_payload_bytes"] >= 4
+    assert meta_v4["expected_hier_sideinfo_bits"] < meta_v3["expected_hier_sideinfo_bits"]
+    assert meta_v4["hyper_measured_bits"] < H * 8.0  # beats raw H×u8 bit count
+    decoded, umeta = ans_hyper_hier_prior_unpack_indices(packed_v4, hyper, prior)
+    assert torch.equal(decoded, idx)
+    assert umeta["sideinfo_mode"] == "hyper_hier_prior"
+    assert umeta["pack_version"] == 4
+    assert torch.equal(
+        ans_hyper_hier_prior_unpack_indices(packed_flat, hyper, prior_flat)[0], idx
+    )
+
+    # Cross-version rejection
+    try:
+        ans_hyper_hier_unpack_indices(packed_v4, hyper)
+        assert False, "expected ValueError for v4 on v3 unpack"
+    except ValueError:
+        pass
+    try:
+        ans_hyper_hier_prior_unpack_indices(packed_v3, hyper, prior)
+        assert False, "expected ValueError for v3 on v4 unpack"
+    except ValueError:
+        pass
+
+    stats = hyperprior_hier_prior_pack_stats(
+        compact_dim=D, levels=L, hyper_dim=H, hyper_levels=Lh
+    )
+    assert stats["pack_version"] == 4
+    assert stats["sideinfo_mode"] == "hyper_hier_prior"
+    assert stats["raw_v3_sideinfo_bytes"] > 0
+
+
+def test_ans_hyper_hier_prior_pack_rejects_geometry_mismatch():
+    import torch
+    from generative_codec import (
+        CategoricalEntropyModel,
+        HyperpriorTableModel,
+        ans_hyper_hier_prior_pack_indices,
+    )
+
+    model = CategoricalEntropyModel(16, levels=8)
+    hyper = HyperpriorTableModel(16, levels=8, hyper_dim=4)
+    bad_prior = CategoricalEntropyModel(4, levels=16)  # levels mismatch vs hyper_levels=32
+    idx = torch.randint(0, 8, (16,))
+    try:
+        ans_hyper_hier_prior_pack_indices(
+            idx, model, hyper, bad_prior, hyper_levels=32, fit_steps=0
+        )
+        assert False, "expected ValueError"
+    except ValueError:
+        pass
+
+
+def test_hyperprior_hier_prior_pack_stats_with_measurement():
+    from generative_codec import hyperprior_hier_prior_pack_stats
+
+    s = hyperprior_hier_prior_pack_stats(
+        compact_dim=256,
+        levels=256,
+        hyper_dim=16,
+        hyper_levels=256,
+        image_side=512,
+        measured_pack_bits=4800.0,
+        sideinfo_bytes=28,
+        hyper_payload_bits=96.0,
+    )
+    assert s["sideinfo_bytes"] == 28
+    assert s["pack_version"] == 4
+    assert abs(s["hyper_payload_bits"] - 96.0) < 1e-9
