@@ -747,6 +747,10 @@ def test_ans_hyper_hier_prior_pack_roundtrip_and_sideinfo():
     assert meta_v4["hyper_payload_bytes"] >= 4
     assert meta_v4["expected_hier_sideinfo_bits"] < meta_v3["expected_hier_sideinfo_bits"]
     assert meta_v4["hyper_measured_bits"] < H * 8.0  # beats raw H×u8 bit count
+    # Header-aware pack saving vs v3: at small H the extra hyper_payload_len u32
+    # can offset ANS gains (tie at 0); the hyper payload alone still beats raw H.
+    assert meta_v4["sideinfo_saving_vs_v3_raw"] >= 0
+    assert meta_v4["hyper_payload_bytes"] < H
     decoded, umeta = ans_hyper_hier_prior_unpack_indices(packed_v4, hyper, prior)
     assert torch.equal(decoded, idx)
     assert umeta["sideinfo_mode"] == "hyper_hier_prior"
@@ -812,3 +816,69 @@ def test_hyperprior_hier_prior_pack_stats_with_measurement():
     assert s["sideinfo_bytes"] == 28
     assert s["pack_version"] == 4
     assert abs(s["hyper_payload_bits"] - 96.0) < 1e-9
+    # raw_v3 = 11 + 2 + 2 + 8 + H + 4 = 27 + H; H=16 → 43; saving = 43 - 28
+    assert s["raw_v3_sideinfo_bytes"] == 43
+    assert s["sideinfo_saving_vs_v3_raw"] == 15
+
+
+def test_mrph_pack_version_guide_covers_v1_to_v4():
+    from generative_codec import (
+        ANS_PACK_VERSION,
+        ANS_PACK_VERSION_HYPER,
+        ANS_PACK_VERSION_HYPER_HIER,
+        ANS_PACK_VERSION_HYPER_HIER_PRIOR,
+        mrph_pack_version_guide,
+    )
+
+    guide = mrph_pack_version_guide()
+    assert [g["version"] for g in guide] == [
+        ANS_PACK_VERSION,
+        ANS_PACK_VERSION_HYPER,
+        ANS_PACK_VERSION_HYPER_HIER,
+        ANS_PACK_VERSION_HYPER_HIER_PRIOR,
+    ]
+    flags = [g["cli_flag"] for g in guide]
+    assert flags == [
+        "--ans-pack",
+        "--ans-hyper",
+        "--ans-hyper-hier",
+        "--ans-hyper-hier-prior",
+    ]
+    # v1 is model-free; v4 needs hyper_prior
+    assert "no live model" in guide[0]["unpack_needs"]
+    assert "hyper_prior" in guide[3]["unpack_needs"]
+    assert guide[3]["sideinfo_mode"] == "hyper_hier_prior"
+
+
+def test_ans_hyper_hier_prior_unpack_rejects_bad_magic_and_prior():
+    """v4 unpack guards: bad magic + prior geometry mismatch."""
+    import torch
+    from generative_codec import (
+        CategoricalEntropyModel,
+        HyperpriorTableModel,
+        ans_hyper_hier_prior_pack_indices,
+        ans_hyper_hier_prior_unpack_indices,
+    )
+
+    torch.manual_seed(5)
+    D, L, H, Lh = 16, 8, 4, 32
+    model = CategoricalEntropyModel(D, levels=L)
+    hyper = HyperpriorTableModel(D, levels=L, hyper_dim=H)
+    prior = CategoricalEntropyModel(H, levels=Lh)
+    idx = torch.randint(0, L, (D,))
+    packed, _ = ans_hyper_hier_prior_pack_indices(
+        idx, model, hyper, prior, hyper_levels=Lh, fit_steps=0
+    )
+
+    try:
+        ans_hyper_hier_prior_unpack_indices(b"XXXX" + packed[4:], hyper, prior)
+        assert False, "expected ValueError for bad magic"
+    except ValueError:
+        pass
+
+    bad_prior = CategoricalEntropyModel(H, levels=16)  # levels != Lh
+    try:
+        ans_hyper_hier_prior_unpack_indices(packed, hyper, bad_prior)
+        assert False, "expected ValueError for prior geometry"
+    except ValueError:
+        pass

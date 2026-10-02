@@ -2,6 +2,18 @@
 
 RedBot daily cadence notes for `IAmM3ta/MORPHOS`. Newest first.
 
+## 2026-10-02 (09:00 ET — daily commit)
+
+**Landed:** MRPH v1–v4 architecture clarity + v4 pack edge hardening (docs/tests; no wire-format bump).
+
+- Added `mrph_pack_version_guide()` in `generative_codec.py` (structured cheat-sheet: version → `sideinfo_mode` → CLI flag → decode needs → when to use).
+- Extended `hyperprior_hier_prior_pack_stats` to report `sideinfo_saving_vs_v3_raw` when measured `sideinfo_bytes` is known; peaked-prior round-trip test now asserts positive savings vs raw H×u8.
+- Added unpack edge tests (bad magic, prior geometry mismatch) + guide coverage test; new "MRPH pack versions (v1–v4)" section in `docs/ENTROPY-CODING-NOTES.md` and a TRAINING-SKETCH pointer; README Changelog.
+
+**Reviewed:** ANS-coded hyper indices under learned prior (MRPH v4) + learned categorical prior on z_h + hierarchical hyperprior ANS pack (MRPH v3) paths from 2026-09-29–10-01 remain intact. Morphogen v2 / red-team brief unchanged this pass.
+
+**Next focus candidates:** wire real VAE latents into the sketch, spatial hyperprior once the code is a feature map, Morphogen Sync auth hello hardening.
+
 ## 2026-10-01 (09:00 ET — daily commit)
 
 **Landed:** ANS-coded hyper indices under the learned categorical prior (MRPH v4) for the IMAGE_8 hierarchical hyperprior pack.

@@ -282,6 +282,31 @@ CLI: `bottleneck_train_sketch.py --ans-hyper-hier-prior`
 (implies a hyper prior; pairs with `--hyper-rate --learned-hyper-prior`;
 exclusive with `--ans-pack` / `--ans-hyper` / `--ans-hyper-hier`).
 
+
+## MRPH pack versions (v1–v4) — which flag when
+
+Self-describing packs share magic `MRPH` and bump `version` / `sideinfo_mode`.
+Train-sketch pack flags are **mutually exclusive**. Prefer the highest version
+that matches what you trained. Code mirror: `mrph_pack_version_guide()`.
+
+| Ver | `sideinfo_mode` | CLI flag | Hyper / side-info on wire | Decode needs | Prefer when |
+|-----|-----------------|----------|---------------------------|--------------|-------------|
+| **v1** | `shared` / `per_dim` | `--ans-pack` | Raw freq tables (u16) | Pack only (model-free) | Simplest bitstream; no shared weights |
+| **v2** | `hyper` | `--ans-hyper` | Raw `H × u8` z_h (+ range) | `HyperpriorTableModel` | Replace fat freq tables; optional `fit_to_logits` |
+| **v3** | `hyper_hier` | `--ans-hyper-hier` | Raw `H × u8` z_h (+ range) | `HyperpriorTableModel` | Measured pack matching `--hyper-rate` (analysis→synth) |
+| **v4** | `hyper_hier_prior` | `--ans-hyper-hier-prior` | rANS of H indices under `CategoricalEntropyModel(H, L_h)` | `HyperpriorTableModel` **+** `hyper_prior` | After `--hyper-rate --learned-hyper-prior`; peaked prior beats raw H×u8 |
+
+**v3 vs v4 in one line:** same hierarchical analysis→quantize→synthesis path;
+v3 ships raw hyper indices, v4 ANS-codes them under the learned prior.
+Flat prior ≈ uniform `H · log2(L_h)` side-info (+ small ANS state); only a
+**peaked** prior shrinks measured hyper payload below raw `H` bytes
+(`meta["hyper_measured_bits"]`; header-aware `sideinfo_saving_vs_v3_raw`
+may tie at 0 for tiny `H`).
+
+Rate-only flags (no pack bump): `--hyper-rate` trains the bridge;
+`--learned-hyper-prior` replaces uniform R(z_h) in the differentiable rate
+term (wire still v3 until you pack with `--ans-hyper-hier-prior`).
+
 ## What to plug in next
 
 1. **Wire real VAE latents** into the sketch (`MockLatentBatch` → encode).

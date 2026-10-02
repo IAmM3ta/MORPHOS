@@ -110,6 +110,7 @@ MORPHOS under RedBot ops. Daily commits refine architecture, docs, and eval harn
 
 ### Changelog
 
+- **2026-10-02 (09:00 ET)** — MRPH v1–v4 flag/wire guide (`mrph_pack_version_guide`), v4 unpack edge tests + `sideinfo_saving_vs_v3_raw` in pack stats; entropy/training docs; [STATUS.md](STATUS.md).
 - **2026-10-01 (09:00 ET)** — ANS-coded hyper indices under learned prior (MRPH v4 / `--ans-hyper-hier-prior`); tests + entropy/training docs; [STATUS.md](STATUS.md).
 - **2026-09-30 (09:00 ET)** — Learned categorical prior on quantized z_h (`hyper_prior=` / `--learned-hyper-prior`) for hierarchical hyperprior rate; tests + entropy/training docs; [STATUS.md](STATUS.md).
 - **2026-09-29 (09:00 ET)** — Hierarchical hyperprior ANS pack (MRPH v3 / `--ans-hyper-hier`); tests + entropy/training docs; [STATUS.md](STATUS.md).

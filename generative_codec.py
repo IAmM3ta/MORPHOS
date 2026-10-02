@@ -21,7 +21,7 @@ Rate note (illustrative FP32, no entropy coding):
   (`hyperprior_hierarchical_rate_bpp`), optional learned categorical prior on
   quantized z_h (replace uniform side-info), hierarchical hyperprior ANS packs
   (`ans_hyper_hier_pack_indices`, MRPH v3), ANS-coded hyper
- indices under a learned prior (`ans_hyper_hier_prior_pack_indices`, MRPH v4),
+  indices under a learned prior (`ans_hyper_hier_prior_pack_indices`, MRPH v4),
  and docs/ENTROPY-CODING-NOTES.md.
 """
 
@@ -886,6 +886,70 @@ ANS_PACK_VERSION_HYPER_HIER = 3
 ANS_SIDEINFO_HYPER_HIER = 3
 ANS_PACK_VERSION_HYPER_HIER_PRIOR = 4
 ANS_SIDEINFO_HYPER_HIER_PRIOR = 4
+
+
+def mrph_pack_version_guide() -> list[dict]:
+    """
+    Architecture cheat-sheet for MRPH wire versions and train-sketch flags.
+
+    Prefer the highest version that matches what you trained: **v4** when a
+    learned hyper prior is available; **v3** for hierarchical packs with raw
+    ``H × u8`` side-info; **v2** for fit-then-pack hyper tables; **v1** when
+    decode must be model-free. Flags are mutually exclusive on the sketch CLI.
+    See ``docs/ENTROPY-CODING-NOTES.md`` (MRPH pack versions).
+    """
+    return [
+        {
+            "version": ANS_PACK_VERSION,
+            "sideinfo_mode": "shared|per_dim",
+            "cli_flag": "--ans-pack",
+            "pack_fn": "ans_pack_indices",
+            "unpack_needs": "pack only (no live model)",
+            "hyper_sideinfo": "raw freq tables (shared or per-dim u16)",
+            "when_to_use": (
+                "Model-free decode; simplest self-describing bitstream. "
+                "Side-info can dominate when D·L is large."
+            ),
+        },
+        {
+            "version": ANS_PACK_VERSION_HYPER,
+            "sideinfo_mode": "hyper",
+            "cli_flag": "--ans-hyper",
+            "pack_fn": "ans_hyper_pack_indices",
+            "unpack_needs": "shared HyperpriorTableModel",
+            "hyper_sideinfo": "raw H × u8 quantized z_h (+ range)",
+            "when_to_use": (
+                "Replace raw freq tables with a cheap quantized hyperlatent. "
+                "Optional fit_to_logits before pack; not the hierarchical train path."
+            ),
+        },
+        {
+            "version": ANS_PACK_VERSION_HYPER_HIER,
+            "sideinfo_mode": "hyper_hier",
+            "cli_flag": "--ans-hyper-hier",
+            "pack_fn": "ans_hyper_hier_pack_indices",
+            "unpack_needs": "shared HyperpriorTableModel",
+            "hyper_sideinfo": "raw H × u8 quantized z_h (+ range)",
+            "when_to_use": (
+                "Measured bitstream matching --hyper-rate "
+                "(analysis→quantize→synthesis). Pairs with --hyper-rate; "
+                "still uniform/raw hyper alphabet on the wire."
+            ),
+        },
+        {
+            "version": ANS_PACK_VERSION_HYPER_HIER_PRIOR,
+            "sideinfo_mode": "hyper_hier_prior",
+            "cli_flag": "--ans-hyper-hier-prior",
+            "pack_fn": "ans_hyper_hier_prior_pack_indices",
+            "unpack_needs": "shared HyperpriorTableModel + hyper_prior",
+            "hyper_sideinfo": "rANS of H indices under CategoricalEntropyModel(H, L_h)",
+            "when_to_use": (
+                "Same hierarchical path as v3, but ANS-codes hyper indices under "
+                "a learned prior. Use after --hyper-rate --learned-hyper-prior; "
+                "peaked priors beat raw H×u8 side-info."
+            ),
+        },
+    ]
 
 
 class HyperpriorTableModel(nn.Module):
@@ -1963,10 +2027,15 @@ def hyperprior_hier_prior_pack_stats(
     out["pack_version"] = ANS_PACK_VERSION_HYPER_HIER_PRIOR
     out["sideinfo_mode"] = "hyper_hier_prior"
     out["raw_v3_sideinfo_bytes"] = raw_v3_si
+    # When measured side-info is known (after a real pack), report savings vs
+    # v3's fixed H×u8 geometry. Flat priors often *lose* a few bytes to ANS
+    # state; peaked priors should show positive savings.
+    if sideinfo_bytes is not None:
+        out["sideinfo_saving_vs_v3_raw"] = int(raw_v3_si) - int(sideinfo_bytes)
     out["note"] = (
         "MRPH v4 hierarchical hyperprior pack with ANS-coded hyper indices "
         "under a learned prior; measured_pack_bits after "
-        "ans_hyper_hier_prior_pack_indices"
+        "ans_hyper_hier_prior_pack_indices. See mrph_pack_version_guide()."
     )
     if hyper_payload_bits is not None:
         out["hyper_payload_bits"] = float(hyper_payload_bits)

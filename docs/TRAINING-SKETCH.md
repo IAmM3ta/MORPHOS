@@ -53,6 +53,14 @@ PYTHONPATH=. python bottleneck_train_sketch.py --steps 8 --hyper-rate --learned-
 PYTHONPATH=. pytest tests/test_train_sketch.py -q
 ```
 
+## MRPH pack flag cheat-sheet
+
+See [ENTROPY-CODING-NOTES.md — MRPH pack versions](./ENTROPY-CODING-NOTES.md#mrph-pack-versions-v1v4--which-flag-when)
+and `mrph_pack_version_guide()` in `generative_codec.py` for when to pick
+`--ans-pack` / `--ans-hyper` / `--ans-hyper-hier` / `--ans-hyper-hier-prior`
+(v1–v4). Pack flags are mutually exclusive; pair v4 with
+`--hyper-rate --learned-hyper-prior`.
+
 ## Out of scope (this sketch)
 
 - Loading Diffusers / CUDA
