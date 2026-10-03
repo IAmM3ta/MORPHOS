@@ -34,7 +34,7 @@ bits-per-pixel on the wire
 | Continuous code | Mock MLP output | Same, or VQ / residual |
 | Quantization | `quantize_uniform()` + STE + **`LearnedQuantAffine`** | Soft / residual / VQ refinements |
 | Rate proxy | FP32 bpp, `log2(L)` × dim, factorized Laplace, **categorical** `-log2 p(index)`, or **hierarchical hyperprior** R(z_h)+R(index\|z) (+ optional **learned categorical prior on z_h**) | Spatial hyperprior / autoregressive entropy model |
-| Bitstream | **tabled rANS** + **self-describing pack** + **hyperprior pack** (z_h side-info) + **hierarchical hyperprior pack** (MRPH v3) + **hier+prior pack** (MRPH v4; ANS-coded hyper indices) | Multi-speed ANS, arithmetic, bits-back, spatial hyperprior |
+| Bitstream | **tabled rANS** + **self-describing pack** + **hyperprior pack** (z_h side-info) + **hierarchical hyperprior pack** (MRPH v3) + **hier+prior pack** (MRPH v4; ANS-coded hyper indices) + **peek/dispatch** (`mrph_peek_header` / `mrph_unpack_indices`) | Multi-speed ANS, arithmetic, bits-back, spatial hyperprior |
 
 ## Uniform quantization sketch
 
@@ -306,6 +306,32 @@ may tie at 0 for tiny `H`).
 Rate-only flags (no pack bump): `--hyper-rate` trains the bridge;
 `--learned-hyper-prior` replaces uniform R(z_h) in the differentiable rate
 term (wire still v3 until you pack with `--ans-hyper-hier-prior`).
+
+## Header peek + version-dispatch unpack
+
+`mrph_peek_header(packed)` reads the **common** MRPH prefix without decoding:
+
+```text
+magic[4]="MRPH" | version u8 | scale_bits u8 | D u16 | L u16 | sideinfo_mode u8
+[+ hyper_dim u16 | hyper_levels u16 for v2+]
+```
+
+It returns geometry, named `sideinfo_mode`, and guide-aligned `unpack_fn` /
+`unpack_needs` / `cli_flag` so a decoder can decide which shared weights to load
+before unpacking.
+
+`mrph_unpack_indices(packed, hyper=..., hyper_prior=...)` peeks then routes:
+
+| Ver | Dispatch target | Required kwargs |
+|-----|-----------------|-----------------|
+| v1 | `ans_unpack_indices` | none |
+| v2 | `ans_hyper_unpack_indices` | `hyper=` |
+| v3 | `ans_hyper_hier_unpack_indices` | `hyper=` |
+| v4 | `ans_hyper_hier_prior_unpack_indices` | `hyper=` + `hyper_prior=` |
+
+Missing models raise a clear `ValueError` (no silent fall-through). Meta includes
+`dispatched_via="mrph_unpack_indices"`. **No wire-format change** — this is a
+caller convenience on top of the existing v1–v4 unpackers.
 
 ## What to plug in next
 

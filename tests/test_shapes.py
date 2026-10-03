@@ -882,3 +882,118 @@ def test_ans_hyper_hier_prior_unpack_rejects_bad_magic_and_prior():
         assert False, "expected ValueError for prior geometry"
     except ValueError:
         pass
+
+
+def test_mrph_peek_header_and_unpack_dispatch():
+    """Peek common header + version-dispatch unpack for MRPH v1–v4."""
+    import torch
+    from generative_codec import (
+        ANS_PACK_VERSION,
+        ANS_PACK_VERSION_HYPER,
+        ANS_PACK_VERSION_HYPER_HIER,
+        ANS_PACK_VERSION_HYPER_HIER_PRIOR,
+        CategoricalEntropyModel,
+        HyperpriorTableModel,
+        ans_hyper_hier_pack_indices,
+        ans_hyper_hier_prior_pack_indices,
+        ans_hyper_pack_indices,
+        ans_pack_indices,
+        mrph_peek_header,
+        mrph_unpack_indices,
+    )
+
+    torch.manual_seed(7)
+    D, L, H, Lh = 16, 8, 4, 32
+    model = CategoricalEntropyModel(D, levels=L)
+    hyper = HyperpriorTableModel(D, levels=L, hyper_dim=H)
+    prior = CategoricalEntropyModel(H, levels=Lh)
+    idx = torch.randint(0, L, (D,))
+
+    packs = []
+    packed_v1, _ = ans_pack_indices(idx, model)
+    packs.append((packed_v1, ANS_PACK_VERSION, "ans_unpack_indices", None, None))
+    packed_v2, _ = ans_hyper_pack_indices(
+        idx, model, hyper, hyper_levels=Lh, fit_steps=40
+    )
+    packs.append((packed_v2, ANS_PACK_VERSION_HYPER, "ans_hyper_unpack_indices", hyper, None))
+    packed_v3, _ = ans_hyper_hier_pack_indices(
+        idx, model, hyper, hyper_levels=Lh, fit_steps=0
+    )
+    packs.append(
+        (packed_v3, ANS_PACK_VERSION_HYPER_HIER, "ans_hyper_hier_unpack_indices", hyper, None)
+    )
+    packed_v4, _ = ans_hyper_hier_prior_pack_indices(
+        idx, model, hyper, prior, hyper_levels=Lh, fit_steps=0
+    )
+    packs.append(
+        (
+            packed_v4,
+            ANS_PACK_VERSION_HYPER_HIER_PRIOR,
+            "ans_hyper_hier_prior_unpack_indices",
+            hyper,
+            prior,
+        )
+    )
+
+    for packed, ver, unpack_fn, hyp, hprior in packs:
+        peek = mrph_peek_header(packed)
+        assert peek["pack_version"] == ver
+        assert peek["compact_dim"] == D
+        assert peek["levels"] == L
+        assert peek["unpack_fn"] == unpack_fn
+        assert peek["cli_flag"] is not None
+        if ver >= ANS_PACK_VERSION_HYPER:
+            assert peek["hyper_dim"] == H
+            assert peek["hyper_levels"] == Lh
+        decoded, meta = mrph_unpack_indices(
+            packed, hyper=hyp, hyper_prior=hprior
+        )
+        assert torch.equal(decoded, idx)
+        assert meta["pack_version"] == ver
+        assert meta["dispatched_via"] == "mrph_unpack_indices"
+        assert meta.get("unpack_fn") == unpack_fn
+
+
+def test_mrph_peek_header_rejects_bad_magic_and_unpack_needs_models():
+    """Peek guards magic; dispatch raises when required models are omitted."""
+    import torch
+    from generative_codec import (
+        CategoricalEntropyModel,
+        HyperpriorTableModel,
+        ans_hyper_hier_prior_pack_indices,
+        ans_hyper_pack_indices,
+        mrph_peek_header,
+        mrph_unpack_indices,
+    )
+
+    torch.manual_seed(11)
+    D, L, H, Lh = 12, 8, 4, 16
+    model = CategoricalEntropyModel(D, levels=L)
+    hyper = HyperpriorTableModel(D, levels=L, hyper_dim=H)
+    prior = CategoricalEntropyModel(H, levels=Lh)
+    idx = torch.randint(0, L, (D,))
+    packed_v2, _ = ans_hyper_pack_indices(
+        idx, model, hyper, hyper_levels=Lh, fit_steps=20
+    )
+    packed_v4, _ = ans_hyper_hier_prior_pack_indices(
+        idx, model, hyper, prior, hyper_levels=Lh, fit_steps=0
+    )
+
+    try:
+        mrph_peek_header(b"XXXX" + packed_v2[4:])
+        assert False, "expected ValueError for bad magic"
+    except ValueError:
+        pass
+
+    try:
+        mrph_unpack_indices(packed_v2)  # missing hyper
+        assert False, "expected ValueError for missing hyper on v2"
+    except ValueError as e:
+        assert "HyperpriorTableModel" in str(e)
+
+    try:
+        mrph_unpack_indices(packed_v4, hyper=hyper)  # missing prior
+        assert False, "expected ValueError for missing hyper_prior on v4"
+    except ValueError as e:
+        assert "hyper_prior" in str(e)
+

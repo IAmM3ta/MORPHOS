@@ -2,6 +2,18 @@
 
 RedBot daily cadence notes for `IAmM3ta/MORPHOS`. Newest first.
 
+## 2026-10-03 (09:00 ET — daily commit)
+
+**Landed:** MRPH header peek + version-dispatching unpack (docs/tests; no wire-format bump).
+
+- Added `mrph_peek_header()` in `generative_codec.py` (common magic/version/geometry/sideinfo_mode; hyper_dim/levels for v2+; `unpack_fn` / `unpack_needs` / `cli_flag` from the version guide).
+- Added `mrph_unpack_indices()` — routes v1–v4 packs to the matching unpacker; clear errors when `hyper=` / `hyper_prior=` are missing.
+- Tests cover peek + round-trip dispatch across v1–v4 and missing-model guards; ENTROPY/TRAINING/STATUS/Changelog notes.
+
+**Reviewed:** MRPH v1–v4 flag guide + v4 edge hardening from 2026-10-02 and ANS-coded hyper indices (MRPH v4) from 2026-10-01 remain intact. Morphogen v2 / red-team brief unchanged this pass.
+
+**Next focus candidates:** wire real VAE latents into the sketch, spatial hyperprior once the code is a feature map, Morphogen Sync auth hello hardening.
+
 ## 2026-10-02 (09:00 ET — daily commit)
 
 **Landed:** MRPH v1–v4 architecture clarity + v4 pack edge hardening (docs/tests; no wire-format bump).

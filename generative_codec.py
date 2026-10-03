@@ -22,6 +22,7 @@ Rate note (illustrative FP32, no entropy coding):
   quantized z_h (replace uniform side-info), hierarchical hyperprior ANS packs
   (`ans_hyper_hier_pack_indices`, MRPH v3), ANS-coded hyper
   indices under a learned prior (`ans_hyper_hier_prior_pack_indices`, MRPH v4),
+  header peek / version dispatch (`mrph_peek_header` / `mrph_unpack_indices`),
  and docs/ENTROPY-CODING-NOTES.md.
 """
 
@@ -950,6 +951,119 @@ def mrph_pack_version_guide() -> list[dict]:
             ),
         },
     ]
+
+
+_MRPH_SIDEINFO_NAMES = {
+    ANS_SIDEINFO_SHARED: "shared",
+    ANS_SIDEINFO_PER_DIM: "per_dim",
+    ANS_SIDEINFO_HYPER: "hyper",
+    ANS_SIDEINFO_HYPER_HIER: "hyper_hier",
+    ANS_SIDEINFO_HYPER_HIER_PRIOR: "hyper_hier_prior",
+}
+
+
+def mrph_peek_header(packed: bytes) -> dict:
+    """
+    Parse the common MRPH header without decoding the payload.
+
+    Reads magic / version / scale_bits / geometry / sideinfo_mode from the
+    leading bytes shared by v1–v4. For v2+, also reports ``hyper_dim`` and
+    ``hyper_levels``. Returns ``unpack_fn`` / ``unpack_needs`` aligned with
+    ``mrph_pack_version_guide()`` so callers can choose models before unpack.
+    Does **not** validate version↔mode pairing beyond naming the mode byte —
+    version-specific unpackers enforce that.
+    """
+    # Common prefix: magic[4] | version | scale_bits | D u16 | L u16 | mode
+    if len(packed) < 4 + 1 + 1 + 2 + 2 + 1:
+        raise ValueError("MRPH pack too short for common header")
+    if packed[0:4] != ANS_PACK_MAGIC:
+        raise ValueError(f"bad ANS pack magic {packed[0:4]!r}")
+    version = packed[4]
+    scale_bits = packed[5]
+    compact_dim = int.from_bytes(packed[6:8], "little")
+    levels = int.from_bytes(packed[8:10], "little")
+    mode = packed[10]
+    sideinfo_mode = _MRPH_SIDEINFO_NAMES.get(mode, f"unknown({mode})")
+    out: dict = {
+        "pack_version": version,
+        "scale_bits": scale_bits,
+        "compact_dim": compact_dim,
+        "levels": levels,
+        "sideinfo_mode": sideinfo_mode,
+        "sideinfo_mode_byte": mode,
+    }
+    if version >= ANS_PACK_VERSION_HYPER:
+        if len(packed) < 4 + 1 + 1 + 2 + 2 + 1 + 2 + 2:
+            raise ValueError("MRPH hyper pack too short for hyper geometry header")
+        out["hyper_dim"] = int.from_bytes(packed[11:13], "little")
+        out["hyper_levels"] = int.from_bytes(packed[13:15], "little")
+
+    guide_by_ver = {g["version"]: g for g in mrph_pack_version_guide()}
+    g = guide_by_ver.get(version)
+    if g is not None:
+        # ans_*_pack_indices → ans_*_unpack_indices (v1–v4 naming)
+        out["unpack_fn"] = g["pack_fn"].replace("pack_indices", "unpack_indices")
+        out["unpack_needs"] = g["unpack_needs"]
+        out["cli_flag"] = g["cli_flag"]
+    else:
+        out["unpack_fn"] = None
+        out["unpack_needs"] = f"unsupported pack version {version}"
+        out["cli_flag"] = None
+    return out
+
+
+def mrph_unpack_indices(
+    packed: bytes,
+    *,
+    hyper: Optional["HyperpriorTableModel"] = None,
+    hyper_prior: Optional["CategoricalEntropyModel"] = None,
+    scale_bits: Optional[int] = None,
+) -> tuple[torch.Tensor, dict]:
+    """
+    Version-dispatching unpack for MRPH v1–v4 packs.
+
+    Peeks the header, then routes to the matching unpacker. Pass ``hyper=``
+    for v2/v3 and ``hyper=`` + ``hyper_prior=`` for v4; v1 needs neither.
+    Meta includes the peeked header fields plus whatever the version unpacker
+    returns (peek keys that overlap are overwritten by the unpacker).
+    """
+    header = mrph_peek_header(packed)
+    ver = int(header["pack_version"])
+    if ver == ANS_PACK_VERSION:
+        indices, meta = ans_unpack_indices(packed)
+    elif ver == ANS_PACK_VERSION_HYPER:
+        if hyper is None:
+            raise ValueError(
+                "MRPH v2 unpack needs HyperpriorTableModel (pass hyper=...)"
+            )
+        indices, meta = ans_hyper_unpack_indices(
+            packed, hyper, scale_bits=scale_bits
+        )
+    elif ver == ANS_PACK_VERSION_HYPER_HIER:
+        if hyper is None:
+            raise ValueError(
+                "MRPH v3 unpack needs HyperpriorTableModel (pass hyper=...)"
+            )
+        indices, meta = ans_hyper_hier_unpack_indices(
+            packed, hyper, scale_bits=scale_bits
+        )
+    elif ver == ANS_PACK_VERSION_HYPER_HIER_PRIOR:
+        if hyper is None or hyper_prior is None:
+            raise ValueError(
+                "MRPH v4 unpack needs HyperpriorTableModel and hyper_prior "
+                "(pass hyper=... and hyper_prior=...)"
+            )
+        indices, meta = ans_hyper_hier_prior_unpack_indices(
+            packed, hyper, hyper_prior, scale_bits=scale_bits
+        )
+    else:
+        raise ValueError(f"unsupported MRPH pack version {ver}")
+    # Surface dispatch hints without clobbering unpacker measurements.
+    for key in ("unpack_fn", "unpack_needs", "cli_flag", "sideinfo_mode_byte"):
+        if key in header and key not in meta:
+            meta[key] = header[key]
+    meta["dispatched_via"] = "mrph_unpack_indices"
+    return indices, meta
 
 
 class HyperpriorTableModel(nn.Module):
