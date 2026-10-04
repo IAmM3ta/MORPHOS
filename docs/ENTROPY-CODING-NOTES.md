@@ -34,7 +34,7 @@ bits-per-pixel on the wire
 | Continuous code | Mock MLP output | Same, or VQ / residual |
 | Quantization | `quantize_uniform()` + STE + **`LearnedQuantAffine`** | Soft / residual / VQ refinements |
 | Rate proxy | FP32 bpp, `log2(L)` × dim, factorized Laplace, **categorical** `-log2 p(index)`, or **hierarchical hyperprior** R(z_h)+R(index\|z) (+ optional **learned categorical prior on z_h**) | Spatial hyperprior / autoregressive entropy model |
-| Bitstream | **tabled rANS** + **self-describing pack** + **hyperprior pack** (z_h side-info) + **hierarchical hyperprior pack** (MRPH v3) + **hier+prior pack** (MRPH v4; ANS-coded hyper indices) + **peek/dispatch** (`mrph_peek_header` / `mrph_unpack_indices`) | Multi-speed ANS, arithmetic, bits-back, spatial hyperprior |
+| Bitstream | **tabled rANS** + **self-describing pack** + **hyperprior pack** (z_h side-info) + **hierarchical hyperprior pack** (MRPH v3) + **hier+prior pack** (MRPH v4; ANS-coded hyper indices) + **peek/describe/dispatch** (`mrph_peek_header` / `mrph_describe_header` / `mrph_unpack_indices`) | Multi-speed ANS, arithmetic, bits-back, spatial hyperprior |
 
 ## Uniform quantization sketch
 
@@ -307,7 +307,7 @@ Rate-only flags (no pack bump): `--hyper-rate` trains the bridge;
 `--learned-hyper-prior` replaces uniform R(z_h) in the differentiable rate
 term (wire still v3 until you pack with `--ans-hyper-hier-prior`).
 
-## Header peek + version-dispatch unpack
+## Header peek + describe + version-dispatch unpack
 
 `mrph_peek_header(packed)` reads the **common** MRPH prefix without decoding:
 
@@ -332,6 +332,12 @@ before unpacking.
 Missing models raise a clear `ValueError` (no silent fall-through). Meta includes
 `dispatched_via="mrph_unpack_indices"`. **No wire-format change** — this is a
 caller convenience on top of the existing v1–v4 unpackers.
+
+`mrph_describe_header(packed_or_peek)` turns a peek dict (or raw bytes) into a
+one-line debug string, e.g.
+`MRPH v4 hyper_hier_prior D=256 L=256 H=16 Lh=256 scale_bits=12 → ans_hyper_hier_prior_unpack_indices (needs …) [--ans-hyper-hier-prior]`.
+The train sketch prints that line after every `--ans-*` pack check (packs decode
+via `mrph_unpack_indices`).
 
 ## What to plug in next
 

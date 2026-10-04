@@ -21,7 +21,9 @@ diffusion prior stay frozen. This module is a *shape-faithful sketch*:
     HyperpriorTableModel jointly), optionally with `--learned-hyper-prior`
     (factorized categorical prior on quantized z_h replacing uniform side-info),
     or hierarchical+prior ANS pack via `--ans-hyper-hier-prior` (MRPH v4;
-    ANS-codes hyper indices under the learned prior instead of raw H×u8)
+    ANS-codes hyper indices under the learned prior instead of raw H×u8).
+    Pack checks peek the MRPH header (`mrph_peek_header` /
+    `mrph_describe_header`) and decode via `mrph_unpack_indices`.
 
 Swap `MockLatentBatch` for real `vae.encode(...).latent_dist.sample()` and
 attach a perceptual / diffusion-aware reconstruction loss when moving off the
@@ -48,12 +50,11 @@ from generative_codec import (
     ans_encode_indices,
     ans_hyper_hier_pack_indices,
     ans_hyper_hier_prior_pack_indices,
-    ans_hyper_hier_prior_unpack_indices,
-    ans_hyper_hier_unpack_indices,
     ans_hyper_pack_indices,
-    ans_hyper_unpack_indices,
     ans_pack_indices,
-    ans_unpack_indices,
+    mrph_describe_header,
+    mrph_peek_header,
+    mrph_unpack_indices,
     categorical_rate_stats,
     factorized_rate_stats,
     hyperprior_hier_pack_stats,
@@ -603,12 +604,13 @@ def ans_check_one_code(
     Uses the first row of `batch_flat`. Requires a CategoricalEntropyModel (same
     geometry as `--categorical-rate`). When `use_pack` is True, wraps the
     payload in a self-describing pack (freq side-info) and decodes via
-    `ans_unpack_indices` (no live model). When `use_hyper` is True, wraps with
+    `mrph_unpack_indices` (no live model for v1). When `use_hyper` is True, wraps with
     a quantized hyperlatent side-info pack (needs shared HyperpriorTableModel).
     When `use_hyper_hier` is True, uses MRPH v3 hierarchical path (z_h then
     indices under synthesis(z_hat)). When `use_hyper_hier_prior` is True, uses
-    MRPH v4 (ANS-codes hyper indices under `hyper_prior`). Returns encode meta
-    plus round-trip OK.
+    MRPH v4 (ANS-codes hyper indices under `hyper_prior`). Pack paths peek the
+    header and decode via `mrph_unpack_indices`; meta includes `header_describe`.
+    Returns encode meta plus round-trip OK.
     """
     if categorical_model is None:
         raise ValueError("categorical_model required for ans_check_one_code")
@@ -644,9 +646,6 @@ def ans_check_one_code(
                 hyper_levels=hyper_levels,
                 fit_steps=hyper_fit_steps,
             )
-            decoded, umeta = ans_hyper_hier_prior_unpack_indices(
-                packed, hyper_model, hyper_prior
-            )
         elif use_hyper_hier:
             packed, meta = ans_hyper_hier_pack_indices(
                 indices,
@@ -655,7 +654,6 @@ def ans_check_one_code(
                 hyper_levels=hyper_levels,
                 fit_steps=hyper_fit_steps,
             )
-            decoded, umeta = ans_hyper_hier_unpack_indices(packed, hyper_model)
         else:
             packed, meta = ans_hyper_pack_indices(
                 indices,
@@ -664,9 +662,16 @@ def ans_check_one_code(
                 hyper_levels=hyper_levels,
                 fit_steps=hyper_fit_steps,
             )
-            decoded, umeta = ans_hyper_unpack_indices(packed, hyper_model)
+        # Peek + version-dispatch unpack (MRPH v2–v4)
+        peek = mrph_peek_header(packed)
+        decoded, umeta = mrph_unpack_indices(
+            packed, hyper=hyper_model, hyper_prior=hyper_prior
+        )
         meta = dict(meta)
         meta["unpack_sideinfo_mode"] = umeta["sideinfo_mode"]
+        meta["header_peek"] = peek
+        meta["header_describe"] = mrph_describe_header(peek)
+        meta["dispatched_via"] = umeta.get("dispatched_via")
         meta["roundtrip_ok"] = bool(torch.equal(decoded, indices.long().cpu()))
         meta["used_pack"] = True
         meta["used_hyper"] = bool(use_hyper)
@@ -676,9 +681,13 @@ def ans_check_one_code(
     with torch.no_grad():
         if use_pack:
             packed, meta = ans_pack_indices(indices, categorical_model)
-            decoded, umeta = ans_unpack_indices(packed)
+            peek = mrph_peek_header(packed)
+            decoded, umeta = mrph_unpack_indices(packed)
             meta = dict(meta)
             meta["unpack_sideinfo_mode"] = umeta["sideinfo_mode"]
+            meta["header_peek"] = peek
+            meta["header_describe"] = mrph_describe_header(peek)
+            meta["dispatched_via"] = umeta.get("dispatched_via")
             meta["roundtrip_ok"] = bool(torch.equal(decoded, indices.long().cpu()))
             meta["used_pack"] = True
             meta["used_hyper"] = False
@@ -975,6 +984,8 @@ def main() -> None:
             f"pack_bytes={meta.get('pack_bytes', meta.get('payload_bytes'))} "
             f"sideinfo_saving_vs_per_dim={meta.get('sideinfo_saving_vs_per_dim', 'n/a')}"
         )
+        if meta.get("header_describe"):
+            print(f"MRPH header: {meta['header_describe']}")
     print("Sketch complete — real VAE latents / spatial hyperprior next.")
 
 

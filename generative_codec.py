@@ -22,7 +22,7 @@ Rate note (illustrative FP32, no entropy coding):
   quantized z_h (replace uniform side-info), hierarchical hyperprior ANS packs
   (`ans_hyper_hier_pack_indices`, MRPH v3), ANS-coded hyper
   indices under a learned prior (`ans_hyper_hier_prior_pack_indices`, MRPH v4),
-  header peek / version dispatch (`mrph_peek_header` / `mrph_unpack_indices`),
+  header peek / describe / version dispatch (`mrph_peek_header` / `mrph_describe_header` / `mrph_unpack_indices`),
  and docs/ENTROPY-CODING-NOTES.md.
 """
 
@@ -1010,6 +1010,44 @@ def mrph_peek_header(packed: bytes) -> dict:
         out["unpack_needs"] = f"unsupported pack version {version}"
         out["cli_flag"] = None
     return out
+
+
+def mrph_describe_header(packed_or_peek) -> str:
+    """
+    Human-readable one-liner for an MRPH pack header (debug / CLI).
+
+    Accepts raw ``bytes`` (peeks first) or a dict already returned by
+    ``mrph_peek_header``. Example::
+
+        MRPH v4 hyper_hier_prior D=256 L=256 H=16 Lh=256 scale_bits=12
+        → ans_hyper_hier_prior_unpack_indices (needs shared HyperpriorTableModel + hyper_prior)
+          [--ans-hyper-hier-prior]
+
+    No wire-format change — logging convenience on top of peek.
+    """
+    if isinstance(packed_or_peek, (bytes, bytearray)):
+        peek = mrph_peek_header(bytes(packed_or_peek))
+    elif isinstance(packed_or_peek, dict):
+        peek = packed_or_peek
+    else:
+        raise TypeError(
+            "mrph_describe_header expects bytes or a mrph_peek_header dict"
+        )
+    ver = peek.get("pack_version")
+    mode = peek.get("sideinfo_mode", "?")
+    d = peek.get("compact_dim", "?")
+    levels = peek.get("levels", "?")
+    scale = peek.get("scale_bits", "?")
+    parts = [f"MRPH v{ver} {mode} D={d} L={levels}"]
+    if "hyper_dim" in peek:
+        parts.append(f"H={peek['hyper_dim']} Lh={peek['hyper_levels']}")
+    parts.append(f"scale_bits={scale}")
+    head = " ".join(parts)
+    unpack_fn = peek.get("unpack_fn") or "unsupported"
+    needs = peek.get("unpack_needs") or "n/a"
+    flag = peek.get("cli_flag")
+    flag_s = f" [{flag}]" if flag else ""
+    return f"{head} → {unpack_fn} (needs {needs}){flag_s}"
 
 
 def mrph_unpack_indices(

@@ -997,3 +997,80 @@ def test_mrph_peek_header_rejects_bad_magic_and_unpack_needs_models():
     except ValueError as e:
         assert "hyper_prior" in str(e)
 
+
+def test_mrph_describe_header_and_truncated_peek():
+    """Describe one-liner + truncated / unsupported-version peek guards."""
+    import torch
+    from generative_codec import (
+        ANS_PACK_MAGIC,
+        ANS_PACK_VERSION_HYPER_HIER_PRIOR,
+        CategoricalEntropyModel,
+        HyperpriorTableModel,
+        ans_hyper_hier_prior_pack_indices,
+        ans_pack_indices,
+        mrph_describe_header,
+        mrph_peek_header,
+    )
+
+    torch.manual_seed(13)
+    D, L, H, Lh = 12, 8, 4, 16
+    model = CategoricalEntropyModel(D, levels=L)
+    hyper = HyperpriorTableModel(D, levels=L, hyper_dim=H)
+    prior = CategoricalEntropyModel(H, levels=Lh)
+    idx = torch.randint(0, L, (D,))
+
+    packed_v1, _ = ans_pack_indices(idx, model)
+    desc_v1 = mrph_describe_header(packed_v1)
+    assert desc_v1.startswith("MRPH v1")
+    assert "ans_unpack_indices" in desc_v1
+    assert "--ans-pack" in desc_v1
+    # Dict form matches bytes form
+    peek_v1 = mrph_peek_header(packed_v1)
+    assert mrph_describe_header(peek_v1) == desc_v1
+
+    packed_v4, _ = ans_hyper_hier_prior_pack_indices(
+        idx, model, hyper, prior, hyper_levels=Lh, fit_steps=0
+    )
+    desc_v4 = mrph_describe_header(packed_v4)
+    assert f"MRPH v{ANS_PACK_VERSION_HYPER_HIER_PRIOR}" in desc_v4
+    assert "hyper_hier_prior" in desc_v4
+    assert f"H={H}" in desc_v4
+    assert "ans_hyper_hier_prior_unpack_indices" in desc_v4
+    assert "--ans-hyper-hier-prior" in desc_v4
+
+    # Truncated common header
+    try:
+        mrph_peek_header(ANS_PACK_MAGIC + bytes([1, 12]))
+        assert False, "expected ValueError for short common header"
+    except ValueError as e:
+        assert "too short" in str(e)
+
+    # Truncated hyper geometry (v2+ needs hyper_dim/levels after mode)
+    # Build a minimal 11-byte common prefix claiming v2
+    short_hyper = bytearray(11)
+    short_hyper[0:4] = ANS_PACK_MAGIC
+    short_hyper[4] = 2  # v2
+    short_hyper[5] = 12
+    short_hyper[6:8] = (D).to_bytes(2, "little")
+    short_hyper[8:10] = (L).to_bytes(2, "little")
+    short_hyper[10] = 2  # hyper mode
+    try:
+        mrph_peek_header(bytes(short_hyper))
+        assert False, "expected ValueError for short hyper header"
+    except ValueError as e:
+        assert "hyper" in str(e).lower() or "too short" in str(e)
+
+    # Unsupported version → describe still works, unpack_fn None
+    weird = bytearray(packed_v1)
+    weird[4] = 99
+    peek_bad = mrph_peek_header(bytes(weird))
+    assert peek_bad["unpack_fn"] is None
+    assert "unsupported" in peek_bad["unpack_needs"]
+    desc_bad = mrph_describe_header(peek_bad)
+    assert "unsupported" in desc_bad
+
+    try:
+        mrph_describe_header(12345)  # type: ignore[arg-type]
+        assert False, "expected TypeError"
+    except TypeError:
+        pass

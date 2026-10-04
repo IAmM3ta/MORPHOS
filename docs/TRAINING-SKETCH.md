@@ -57,10 +57,12 @@ PYTHONPATH=. pytest tests/test_train_sketch.py -q
 
 See [ENTROPY-CODING-NOTES.md — MRPH pack versions](./ENTROPY-CODING-NOTES.md#mrph-pack-versions-v1v4--which-flag-when)
 and `mrph_pack_version_guide()` / `mrph_peek_header()` /
-`mrph_unpack_indices()` in `generative_codec.py` for when to pick
-`--ans-pack` / `--ans-hyper` / `--ans-hyper-hier` / `--ans-hyper-hier-prior`
-(v1–v4) and how to dispatch unpack by wire version. Pack flags are mutually
-exclusive; pair v4 with `--hyper-rate --learned-hyper-prior`.
+`mrph_describe_header()` / `mrph_unpack_indices()` in `generative_codec.py`
+for when to pick `--ans-pack` / `--ans-hyper` / `--ans-hyper-hier` /
+`--ans-hyper-hier-prior` (v1–v4) and how to peek/describe/dispatch unpack by
+wire version. Pack flags are mutually exclusive; pair v4 with
+`--hyper-rate --learned-hyper-prior`. Sketch pack checks print the describe
+line after round-trip.
 
 ## Out of scope (this sketch)
 
