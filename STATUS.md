@@ -2,6 +2,18 @@
 
 RedBot daily cadence notes for `IAmM3ta/MORPHOS`. Newest first.
 
+## 2026-10-05 (09:00 ET — daily commit)
+
+**Landed:** Morphogen v2 Sync auth hello hardening (red-team C2) — client handshake + reference TD-side gate.
+
+- `morphogen-v2/src/sync/tdClient.ts`: telemetry pump now starts only after TD replies `{ v:1, ack:'morphogen', ok:true }` (previously it pumped on socket open, so an un-gated server still received sensor data). New `authenticating` state, 2 s `HELLO_ACK_TIMEOUT_MS`, sticky `error` on reject/timeout, `validateAuthToken` (≥16 chars, no whitespace) and `parseHelloAck`; handlers ignore events from superseded sockets.
+- `morphogen-v2/td/morphogen_sync_auth.py`: pure-Python `SyncAuthGate` (constant-time compare, ±30 s hello window, 64 KB frame cap, drop after 3 bad hellos, per-client state, reason codes that never echo the secret). `morphogen-v2/td/morphogen_sync_callbacks.py`: WebSocket DAT glue that writes `morphogen_table` / `morphogen_grid` only for authed clients; secret from parent par `Syncsecret`, fails closed if unset.
+- `tests/test_td_sync_auth.py` (gate + table flattening); new `docs/morphogen-redteam/SYNC-AUTH.md` documents the ack, reason codes and client state machine (extends REBUILD-SPEC §6); morphogen-v2 README gains a TD section and repo-relative doc links. Full suite: 110 passed; `tsc` clean; client handshake exercised against a fake WebSocket (hello-only → ack → pump, reject, timeout).
+
+**Reviewed:** MRPH header describe/peek/dispatch (2026-10-03–04), v1–v4 flag guide (2026-10-02) and MRPH v4 (2026-10-01) remain intact; no codec changes this pass.
+
+**Next focus candidates:** wire real VAE latents into the sketch, spatial hyperprior once the code is a feature map, Sync reconnect backoff + path picker UI, `*.local` allowlist with confirm.
+
 ## 2026-10-04 (09:00 ET — daily commit)
 
 **Landed:** MRPH header describe + train-sketch peek/dispatch wire-up (docs/tests; no wire-format bump).

@@ -110,6 +110,7 @@ MORPHOS under RedBot ops. Daily commits refine architecture, docs, and eval harn
 
 ### Changelog
 
+- **2026-10-05 (09:00 ET)** — Morphogen v2 Sync auth hardening: hello→ack handshake in `tdClient.ts` (no telemetry before TD acks; 2 s timeout; token checks), reference TD gate `morphogen-v2/td/` + `tests/test_td_sync_auth.py`; [SYNC-AUTH.md](docs/morphogen-redteam/SYNC-AUTH.md); [STATUS.md](STATUS.md).
 - **2026-10-04 (09:00 ET)** — MRPH header describe (`mrph_describe_header`) + train-sketch pack peek/dispatch wire-up; truncated-header tests; entropy/training docs; [STATUS.md](STATUS.md).
 - **2026-10-03 (09:00 ET)** — MRPH header peek + version-dispatch unpack (`mrph_peek_header` / `mrph_unpack_indices`); tests + entropy/training docs; [STATUS.md](STATUS.md).
 - **2026-10-02 (09:00 ET)** — MRPH v1–v4 flag/wire guide (`mrph_pack_version_guide`), v4 unpack edge tests + `sideinfo_saving_vs_v3_raw` in pack stats; entropy/training docs; [STATUS.md](STATUS.md).
