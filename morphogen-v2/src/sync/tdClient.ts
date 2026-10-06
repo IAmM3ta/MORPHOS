@@ -10,9 +10,20 @@
  *   TD     → { v:1, ack:'morphogen', ok:true }        (or ok:false + reason, then close)
  *   client → telemetry @ 20 Hz, only after ok:true; no ack within HELLO_ACK_TIMEOUT_MS → error.
  * Reference TD-side gate: morphogen-v2/td/morphogen_sync_auth.py.
+ *
+ * Reconnect (2026-10-06, REBUILD-SPEC §6 client hardening):
+ *   Only *transient* failures retry — the socket failed to open (TD not up yet)
+ *   or an authed session dropped. Retries use capped exponential backoff with
+ *   "equal jitter" (see reconnectDelayMs) so a room full of phones doesn't
+ *   stampede TD the instant it restarts. *Terminal* failures never retry:
+ *   bad URL / token, TD's ok:false ack, ack timeout, or a close mid-handshake —
+ *   retrying those would only burn TD's bad-hello budget with the same secret.
+ *   Every retry is a fresh socket + fresh hello (no auth state is reused).
  */
 
 export type SyncPath = 'companion' | 'midi' | 'wss';
+
+export type TdStatus = 'idle' | 'connecting' | 'authenticating' | 'open' | 'reconnecting' | 'error';
 
 export type TdHello = {
   v: 1;
@@ -39,6 +50,34 @@ export const HELLO_ACK_TIMEOUT_MS = 2000;
 export const MIN_AUTH_TOKEN_LEN = 16;
 /** Upper bound so a pasted blob can't bloat every hello. */
 export const MAX_AUTH_TOKEN_LEN = 256;
+
+/** First retry waits ~RECONNECT_BASE_MS (jittered); each later one doubles the ceiling. */
+export const RECONNECT_BASE_MS = 500;
+/** Backoff ceiling — a stage restart should be picked up within ~15 s. */
+export const RECONNECT_MAX_MS = 15_000;
+/** Give up (status 'error') after this many consecutive transient failures. */
+export const RECONNECT_MAX_ATTEMPTS = 8;
+
+/**
+ * Delay before reconnect attempt `attempt` (0-based), in ms.
+ *
+ * Capped exponential backoff with equal jitter: ceiling = min(max, base·2^attempt),
+ * delay ∈ [ceiling/2, ceiling). The floor of ceiling/2 keeps clients from
+ * hammering TD; the random upper half spreads simultaneous reconnects apart.
+ * `rand` is injectable for tests and must return a value in [0, 1).
+ */
+export function reconnectDelayMs(
+  attempt: number,
+  rand: () => number = Math.random,
+  baseMs: number = RECONNECT_BASE_MS,
+  maxMs: number = RECONNECT_MAX_MS,
+): number {
+  const n = Number.isFinite(attempt) && attempt > 0 ? Math.floor(attempt) : 0;
+  // 2^n overflows to Infinity long before it matters; min() clamps it anyway.
+  const ceiling = Math.min(maxMs, baseMs * 2 ** n);
+  const r = Math.min(Math.max(rand(), 0), 1 - Number.EPSILON);
+  return Math.floor(ceiling / 2 + r * (ceiling / 2));
+}
 
 export type TdTelemetry = {
   v: 1;
@@ -130,21 +169,45 @@ export function parseHelloAck(raw: unknown): TdHelloAck | null {
   return ack;
 }
 
+export type TdClientOptions = {
+  /** Retry transient failures with backoff (default true). */
+  autoReconnect?: boolean;
+  /** Consecutive transient failures before giving up (default RECONNECT_MAX_ATTEMPTS). */
+  maxReconnectAttempts?: number;
+  /** Jitter source in [0, 1); injectable for tests (default Math.random). */
+  rand?: () => number;
+};
+
+type ConnectTarget = { url: string; path: SyncPath; getPayload: () => TdTelemetry };
+
 export class TdClient {
   private ws: WebSocket | null = null;
   private timer: ReturnType<typeof setInterval> | null = null;
   private ackTimer: ReturnType<typeof setTimeout> | null = null;
+  private retryTimer: ReturnType<typeof setTimeout> | null = null;
   private authToken: string;
+  private target: ConnectTarget | null = null;
+  private readonly autoReconnect: boolean;
+  private readonly maxReconnectAttempts: number;
+  private readonly rand: () => number;
   /**
    * idle → connecting (socket opening) → authenticating (hello sent, awaiting ack)
-   * → open (ack ok, telemetry pumping). Any failure lands in 'error'.
+   * → open (ack ok, telemetry pumping). Transient failures → reconnecting (retry
+   * scheduled) → connecting …; terminal failures or an exhausted budget → error.
    */
-  status: 'idle' | 'connecting' | 'authenticating' | 'open' | 'error' = 'idle';
+  status: TdStatus = 'idle';
   lastError: string | null = null;
-  onStatus?: (s: TdClient['status'], err?: string | null) => void;
+  /** Consecutive transient failures since the last successful ack (0 when healthy). */
+  reconnectAttempt = 0;
+  /** Epoch ms of the scheduled retry while status === 'reconnecting', else null. */
+  nextRetryAt: number | null = null;
+  onStatus?: (s: TdStatus, err?: string | null) => void;
 
-  constructor(authToken = '') {
+  constructor(authToken = '', opts: TdClientOptions = {}) {
     this.authToken = authToken;
+    this.autoReconnect = opts.autoReconnect ?? true;
+    this.maxReconnectAttempts = Math.max(0, opts.maxReconnectAttempts ?? RECONNECT_MAX_ATTEMPTS);
+    this.rand = opts.rand ?? Math.random;
   }
 
   setAuth(token: string): void {
@@ -161,33 +224,41 @@ export class TdClient {
     };
   }
 
+  /** User-initiated connect: resets the retry budget, then opens a socket. */
   connect(url: string, path: SyncPath, getPayload: () => TdTelemetry): void {
     this.disconnect();
     const check = validateTdUrl(url, path);
     if (!check.ok) {
-      this.status = 'error';
-      this.lastError = check.reason ?? 'rejected';
-      this.onStatus?.(this.status, this.lastError);
+      this.setError(check.reason ?? 'rejected');
       return;
     }
     const tok = validateAuthToken(this.authToken);
     if (!tok.ok) {
-      this.status = 'error';
-      this.lastError = tok.reason ?? 'Auth token rejected';
-      this.onStatus?.(this.status, this.lastError);
+      this.setError(tok.reason ?? 'Auth token rejected');
       return;
     }
+    this.target = { url, path, getPayload };
+    this.reconnectAttempt = 0;
+    this.openSocket();
+  }
+
+  /** Open one socket for `this.target` and run the hello → ack → pump sequence. */
+  private openSocket(): void {
+    const target = this.target;
+    if (!target) return;
+    this.nextRetryAt = null;
     this.status = 'connecting';
     this.onStatus?.(this.status, null);
+    let ws: WebSocket;
     try {
-      this.ws = new WebSocket(url);
+      ws = new WebSocket(target.url);
     } catch (e) {
-      this.status = 'error';
-      this.lastError = e instanceof Error ? e.message : 'WebSocket failed';
-      this.onStatus?.(this.status, this.lastError);
+      // Constructor throws are deterministic (bad URL, CSP, mixed content) —
+      // retrying the same URL can't succeed, so this is terminal.
+      this.fail(e instanceof Error ? e.message : 'WebSocket failed');
       return;
     }
-    const ws = this.ws;
+    this.ws = ws;
     ws.onopen = () => {
       if (this.ws !== ws) return;
       // Hello first; no telemetry until TD acks auth (C2). Previously the pump
@@ -200,22 +271,28 @@ export class TdClient {
       }, HELLO_ACK_TIMEOUT_MS);
     };
     // Every handler ignores events from a superseded socket (disconnect() →
-    // connect() races, or fail() already detached it).
-    ws.onclose = () => {
-      if (this.ws !== ws) return;
-      this.ws = null;
-      this.stopPump();
-      // Keep a failure visible instead of flipping back to a silent 'idle'.
-      if (this.status !== 'error') {
-        this.status = 'idle';
-        this.onStatus?.(this.status, null);
-      }
-    };
+    // connect() races, retries, or fail() already detached it).
     ws.onerror = () => {
       if (this.ws !== ws) return;
+      // Browsers always follow 'error' with 'close'; decide retry vs. give up there.
       this.lastError = 'Socket error — if HTTPS, use path A companion, B MIDI, or C wss';
-      this.status = 'error';
-      this.onStatus?.(this.status, this.lastError);
+    };
+    ws.onclose = () => {
+      if (this.ws !== ws) return;
+      const was = this.status;
+      this.ws = null;
+      this.stopPump();
+      if (was === 'authenticating') {
+        // TD closed before acking. A gated TD always acks first, so this is a
+        // non-conforming / legacy server — don't keep re-sending the secret.
+        this.fail('TD closed the socket during the hello handshake');
+        return;
+      }
+      const reason =
+        was === 'open'
+          ? 'Sync connection dropped'
+          : (this.lastError ?? 'Could not reach TD');
+      this.scheduleReconnect(reason);
     };
     ws.onmessage = (ev: MessageEvent) => {
       if (this.ws !== ws) return;
@@ -232,20 +309,47 @@ export class TdClient {
       }
       this.status = 'open';
       this.lastError = null;
+      this.reconnectAttempt = 0; // healthy again: next drop starts from the base delay
       this.onStatus?.(this.status, null);
       this.timer = setInterval(() => {
         if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
         if (this.ws.bufferedAmount > 256_000) return; // backpressure
-        this.ws.send(JSON.stringify(getPayload()));
+        this.ws.send(JSON.stringify(target.getPayload()));
       }, 50);
     };
   }
 
-  /** Tear down the socket but leave status='error' + lastError for the UI. */
-  private fail(reason: string): void {
-    this.stopPump();
+  /** Transient failure: retry with backoff, or give up once the budget is spent. */
+  private scheduleReconnect(reason: string): void {
+    this.clearRetryTimer();
+    if (!this.autoReconnect || !this.target || this.reconnectAttempt >= this.maxReconnectAttempts) {
+      const spent = this.autoReconnect && this.maxReconnectAttempts > 0;
+      this.fail(spent ? `${reason} — gave up after ${this.reconnectAttempt} retries` : reason);
+      return;
+    }
+    const delay = reconnectDelayMs(this.reconnectAttempt, this.rand);
+    this.reconnectAttempt += 1;
+    this.nextRetryAt = Date.now() + delay;
+    this.status = 'reconnecting';
+    this.lastError = `${reason} — retry ${this.reconnectAttempt}/${this.maxReconnectAttempts} in ${(delay / 1000).toFixed(1)} s`;
+    this.onStatus?.(this.status, this.lastError);
+    this.retryTimer = setTimeout(() => {
+      this.retryTimer = null;
+      this.openSocket();
+    }, delay);
+  }
+
+  private setError(reason: string): void {
     this.status = 'error';
     this.lastError = reason;
+    this.onStatus?.(this.status, this.lastError);
+  }
+
+  /** Terminal: tear down the socket, cancel retries, leave status='error' + lastError for the UI. */
+  private fail(reason: string): void {
+    this.stopPump();
+    this.clearRetryTimer();
+    this.nextRetryAt = null;
     const ws = this.ws;
     this.ws = null;
     try {
@@ -253,12 +357,17 @@ export class TdClient {
     } catch {
       /* */
     }
-    this.onStatus?.(this.status, this.lastError);
+    this.setError(reason);
   }
 
   private clearAckTimer(): void {
     if (this.ackTimer) clearTimeout(this.ackTimer);
     this.ackTimer = null;
+  }
+
+  private clearRetryTimer(): void {
+    if (this.retryTimer) clearTimeout(this.retryTimer);
+    this.retryTimer = null;
   }
 
   private stopPump(): void {
@@ -267,16 +376,22 @@ export class TdClient {
     this.clearAckTimer();
   }
 
+  /** User-initiated stop: cancels any pending retry and forgets the target. */
   disconnect(): void {
     this.stopPump();
-    if (this.ws) {
+    this.clearRetryTimer();
+    this.target = null;
+    this.nextRetryAt = null;
+    this.reconnectAttempt = 0;
+    const ws = this.ws;
+    this.ws = null; // detach first so its onclose can't schedule a retry
+    if (ws) {
       try {
-        this.ws.close();
+        ws.close();
       } catch {
         /* */
       }
     }
-    this.ws = null;
     this.status = 'idle';
     this.onStatus?.(this.status, null);
   }

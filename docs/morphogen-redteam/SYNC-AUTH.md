@@ -20,7 +20,24 @@ Extends REBUILD-SPEC §6 "Protocol". Added 2026-10-05.
 
 ## Client state machine (`morphogen-v2/src/sync/tdClient.ts`)
 
-`idle → connecting → authenticating → open`; any failure → `error`, which stays visible instead of silently flipping back to `idle`. Socket handlers ignore events from a superseded socket, so a fast disconnect/connect can't stop the new pump.
+`idle → connecting → authenticating → open`; transient failures → `reconnecting → connecting …`; terminal failures (or an exhausted retry budget) → `error`, which stays visible instead of silently flipping back to `idle`. Socket handlers ignore events from a superseded socket, so a fast disconnect/connect or a retry can't be hijacked by a late close from the old one.
+
+## Reconnect backoff (added 2026-10-06)
+
+Only failures that a retry can plausibly fix are retried:
+
+| Failure | Retry? | Why |
+|---|---|---|
+| Socket never opened (TD not running yet, network blip) | yes | TD may be mid-restart |
+| Authed session dropped (`open` → close) | yes | stage restart / Wi-Fi roam |
+| URL / token validation, `new WebSocket` throws | no | deterministic — same input, same failure |
+| TD `ok: false` ack (`bad_auth`, `stale_hello`, …) | no | wrong secret or clock; retrying burns TD's 3-hello budget |
+| No ack within 2 s | no | TD isn't auth-gated; don't keep sending the secret to it |
+| TD closes during the handshake (no ack) | no | non-conforming server; same reason |
+
+Delay for retry *n* (0-based) is `reconnectDelayMs(n)`: capped exponential backoff with equal jitter — ceiling = min(15 s, 500 ms · 2ⁿ), delay uniform in [ceiling/2, ceiling). The floor stops a client hammering TD; the jittered upper half spreads a room of phones apart when TD comes back. Defaults: `RECONNECT_BASE_MS = 500`, `RECONNECT_MAX_MS = 15000`, `RECONNECT_MAX_ATTEMPTS = 8` (≈ 30–60 s of retrying in total before giving up). A successful ack resets the budget; every retry is a fresh socket and a fresh hello with a new `t`. `disconnect()` cancels a pending retry. While waiting, `status === 'reconnecting'`, `reconnectAttempt` / `nextRetryAt` are set, and `lastError` reads e.g. `Could not reach TD — retry 2/8 in 0.7 s`. Opt out with `new TdClient(secret, { autoReconnect: false })`.
+
+Tests: `cd morphogen-v2 && npm test` (node:test with a fake WebSocket + mocked timers — handshake, terminal vs transient classification, backoff timing, budget exhaustion, stale-socket guard).
 
 ## Reference TD side (`morphogen-v2/td/`)
 
@@ -29,4 +46,4 @@ Extends REBUILD-SPEC §6 "Protocol". Added 2026-10-05.
 
 ## Still open (REBUILD-SPEC §6 client hardening)
 
-Reconnect backoff + jitter, path-picker UI, `*.local` allowlist with confirm, persisted `tdUrl` sanitising. wss (path C) is still required for anything beyond a trusted LAN — the timestamp window is a replay speed bump, not transport security.
+Path-picker UI (and surfacing `reconnecting` / retry countdown in the Sync panel), `*.local` allowlist with confirm, persisted `tdUrl` sanitising. wss (path C) is still required for anything beyond a trusted LAN — the timestamp window is a replay speed bump, not transport security.

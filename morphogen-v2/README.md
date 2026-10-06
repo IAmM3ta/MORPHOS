@@ -9,7 +9,7 @@ First-principles rebuild of the Morphogen live AV instrument.
 1. **Sim** — `src/sim/grayScott.ts`: Float32 U/V buffers, portable JS kernel, worker-ready API (main-thread demo for now).
 2. **Render** — `src/render/canvas2d.ts`: palette map → `ImageData` → `putImageData` only.
 3. **Audio** — `src/audio/hum.ts`: Schumann-inspired Hum; unlock on gesture; limiter; **`dispose()` on teardown**.
-4. **Sync** — `src/sync/tdClient.ts`: paths **A** companion `http://127.0.0.1` + `ws://`, **B** MIDI-only on HTTPS, **C** auth `wss`; hello includes `auth`, telemetry waits for TD's `{ack, ok:true}` (2 s timeout).
+4. **Sync** — `src/sync/tdClient.ts`: paths **A** companion `http://127.0.0.1` + `ws://`, **B** MIDI-only on HTTPS, **C** auth `wss`; hello includes `auth`, telemetry waits for TD's `{ack, ok:true}` (2 s timeout); transient drops reconnect with jittered exponential backoff (auth rejects never retry).
 5. **UI** — panel stubs Field / Image / Body / Sound / Sync; explicit Lock loop; Reset confirm; `?perform=1`.
 6. **Privacy** — gyro opt-in / mic+Sync consent / camera perf mode specified in REBUILD-SPEC (stubs here).
 7. **Fonts** — system stack only (no Google Fonts).
@@ -45,6 +45,7 @@ Open `http://127.0.0.1:5173` → ENTER → click/drag to seed colonies.
 ```bash
 npm run build
 npm run check:nowebgl
+npm test            # Sync client: handshake + reconnect backoff (node:test, fake WebSocket)
 ```
 
 ## Operator kill-list

@@ -3,14 +3,16 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "Morphogen v2 \u2014 CPU Gray\u2013Scott + Canvas 2D (GPU contexts forbidden)",
+  "description": "Morphogen v2 — CPU Gray–Scott + Canvas 2D (GPU contexts forbidden)",
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "check:nowebgl": "rg -n -i \"webgl|webgpu|getContext\\(['\\\"]webgl\" src && exit 1 || echo 'OK: no GPU canvas context APIs in src'"
+    "check:nowebgl": "rg -n -i \"webgl|webgpu|getContext\\(['\\\"]webgl\" src && exit 1 || echo 'OK: no GPU canvas context APIs in src'",
+    "test": "esbuild src/sync/tdClient.ts --bundle --format=esm --platform=neutral --outfile=.test-build/tdClient.mjs --log-level=warning && node --test tests/"
   },
   "devDependencies": {
+    "esbuild": "^0.21.5",
     "typescript": "^5.6.3",
     "vite": "^5.4.11"
   }

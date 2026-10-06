@@ -2,6 +2,18 @@
 
 RedBot daily cadence notes for `IAmM3ta/MORPHOS`. Newest first.
 
+## 2026-10-06 (09:00 ET — daily commit)
+
+**Landed:** Morphogen v2 Sync reconnect backoff + jitter (REBUILD-SPEC §6 client hardening) and the first committed tests for the browser Sync client.
+
+- `morphogen-v2/src/sync/tdClient.ts`: failures are now classified. *Transient* (socket never opened, authed session dropped) → new `reconnecting` status and a retry after `reconnectDelayMs(n)` — capped exponential backoff with equal jitter, ceiling min(15 s, 500 ms·2ⁿ), delay in [ceiling/2, ceiling), 8 consecutive tries then `error`. *Terminal* (URL/token validation, `new WebSocket` throw, TD `ok:false`, 2 s ack timeout, close mid-handshake) never retry, so a wrong secret can't burn TD's 3-bad-hello budget or keep being re-sent to an un-gated server. Successful ack resets the budget; every retry is a fresh socket + fresh hello; `disconnect()` cancels a pending retry. Refactor: `connect()` (user-initiated, resets budget) now delegates to private `openSocket()`; `onerror` only records the reason and `onclose` decides; new `TdStatus` type, `TdClientOptions { autoReconnect, maxReconnectAttempts, rand }`, public `reconnectAttempt` / `nextRetryAt` for the UI.
+- `morphogen-v2/tests/tdClient.test.mjs` + `npm test` (esbuild bundles `tdClient.ts`, then `node --test` with a fake WebSocket and mocked timers): 11 tests — delay bounds/cap/bad-input clamping, hello-only-until-ack, reject / timeout / mid-handshake close are terminal, retry timing doubles then resets on success, authed-drop retry, budget exhaustion, disconnect cancels retry, `autoReconnect:false`, stale-socket guard, bad token opens no socket. `esbuild` pinned as a direct devDependency (was only transitive via vite); `.test-build/` git-ignored.
+- `docs/morphogen-redteam/SYNC-AUTH.md` gains a "Reconnect backoff" section (retry/no-retry table + defaults); morphogen-v2 README Sync line + `npm test`; README Changelog. Checks: `npm test` 11/11, `tsc` clean, `npm run build` OK, `check:nowebgl` OK.
+
+**Reviewed:** Sync hello→ack handshake + TD `SyncAuthGate` (2026-10-05), MRPH header describe/peek/dispatch (2026-10-03–04), v1–v4 flag guide (2026-10-02) and MRPH v4 (2026-10-01) remain intact; no codec or TD-side changes this pass.
+
+**Next focus candidates:** surface `reconnecting` + retry countdown in the Sync panel, path-picker UI, `*.local` allowlist with confirm, persisted `tdUrl` sanitising, wire real VAE latents into the sketch, spatial hyperprior once the code is a feature map.
+
 ## 2026-10-05 (09:00 ET — daily commit)
 
 **Landed:** Morphogen v2 Sync auth hello hardening (red-team C2) — client handshake + reference TD-side gate.
