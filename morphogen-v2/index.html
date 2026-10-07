@@ -55,6 +55,12 @@
       #gate .earth { letter-spacing: 0.2em; font-size: 0.7rem; opacity: 0.7; }
       #gate h2 { margin: 0.75rem 0 0.25rem; font-weight: 500; }
       #gate p { opacity: 0.7; font-size: 0.85rem; }
+      /* Sync status chip (tone from describeTdStatus in src/sync/tdClient.ts) */
+      .sync-chip { cursor: default; font-variant-numeric: tabular-nums; }
+      .sync-chip[data-tone="busy"] { border-color: #3d6aa1; }
+      .sync-chip[data-tone="ok"] { border-color: #2f8f5b; color: #9fe3bd; }
+      .sync-chip[data-tone="warn"] { border-color: #a1782f; color: #f0cf8f; }
+      .sync-chip[data-tone="error"] { border-color: #a13d3d; color: #f1a3a3; }
       body.perform header .tag.dev, body.perform #panels .dev-only { display: none; }
     </style>
   </head>
@@ -85,6 +91,8 @@
         <button type="button" data-panel="sync">Sync</button>
         <button type="button" id="lockLoop">Lock loop</button>
         <button type="button" id="resetField">Reset</button>
+        <span class="chip sync-chip" id="syncStatus" data-tone="idle" role="status" aria-live="polite">Sync off</span>
+        <button type="button" id="syncRetry" hidden>Retry now</button>
         <span class="chip dev-only" id="panelNote">panels: stubs</span>
       </div>
     </div>

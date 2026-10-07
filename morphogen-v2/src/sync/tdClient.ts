@@ -169,6 +169,71 @@ export function parseHelloAck(raw: unknown): TdHelloAck | null {
   return ack;
 }
 
+/** Plain-data view of a client, for the UI and for tests (no socket handles). */
+export type TdSnapshot = {
+  status: TdStatus;
+  lastError: string | null;
+  reconnectAttempt: number;
+  maxReconnectAttempts: number;
+  nextRetryAt: number | null;
+};
+
+export type TdStatusTone = 'idle' | 'busy' | 'ok' | 'warn' | 'error';
+
+/** What the Sync panel shows: one line of text, a colour tone, and the live countdown. */
+export type TdStatusView = {
+  label: string;
+  tone: TdStatusTone;
+  /** ms until the scheduled retry while reconnecting (never negative), else null. */
+  countdownMs: number | null;
+  /** True only while a backoff retry is pending (terminal errors need a fresh user connect). */
+  canRetryNow: boolean;
+};
+
+/**
+ * Pure status → text mapping for the Sync panel (2026-10-07).
+ * Kept out of the DOM so it is unit-testable and so the countdown is computed
+ * from `nextRetryAt` against the caller's clock instead of a second timer that
+ * could drift from the real retry. Strings never include the auth token —
+ * `lastError` is built only from fixed messages and TD reason codes.
+ */
+export function describeTdStatus(snap: TdSnapshot, now: number = Date.now()): TdStatusView {
+  switch (snap.status) {
+    case 'idle':
+      return { label: 'Sync off', tone: 'idle', countdownMs: null, canRetryNow: false };
+    case 'connecting':
+      return {
+        label: snap.reconnectAttempt > 0 ? `Sync: reconnecting (try ${snap.reconnectAttempt}/${snap.maxReconnectAttempts})…` : 'Sync: connecting…',
+        tone: 'busy',
+        countdownMs: null,
+        canRetryNow: false,
+      };
+    case 'authenticating':
+      return { label: 'Sync: waiting for TD hello ack…', tone: 'busy', countdownMs: null, canRetryNow: false };
+    case 'open':
+      return { label: 'Sync: live → TD', tone: 'ok', countdownMs: null, canRetryNow: false };
+    case 'reconnecting': {
+      const ms = snap.nextRetryAt === null ? 0 : Math.max(0, snap.nextRetryAt - now);
+      // Round *up* so the display never reads "0.0 s" while the retry is still pending.
+      const secs = (Math.ceil(ms / 100) / 10).toFixed(1);
+      return {
+        label: `Sync: TD unreachable — retry ${snap.reconnectAttempt}/${snap.maxReconnectAttempts} in ${secs} s`,
+        tone: 'warn',
+        countdownMs: ms,
+        canRetryNow: true,
+      };
+    }
+    case 'error':
+    default:
+      return {
+        label: `Sync error: ${snap.lastError ?? 'unknown'}`,
+        tone: 'error',
+        countdownMs: null,
+        canRetryNow: false,
+      };
+  }
+}
+
 export type TdClientOptions = {
   /** Retry transient failures with backoff (default true). */
   autoReconnect?: boolean;
@@ -374,6 +439,30 @@ export class TdClient {
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
     this.clearAckTimer();
+  }
+
+  /** Current state as plain data (feed to describeTdStatus). */
+  snapshot(): TdSnapshot {
+    return {
+      status: this.status,
+      lastError: this.lastError,
+      reconnectAttempt: this.reconnectAttempt,
+      maxReconnectAttempts: this.maxReconnectAttempts,
+      nextRetryAt: this.nextRetryAt,
+    };
+  }
+
+  /**
+   * Skip the remaining backoff and retry immediately (Sync panel "Retry now").
+   * Only acts while status === 'reconnecting'; it does NOT reset the retry
+   * budget, so mashing the button can't exceed maxReconnectAttempts or turn a
+   * terminal auth failure back into a hello loop. Returns true if a socket opened.
+   */
+  retryNow(): boolean {
+    if (this.status !== 'reconnecting' || !this.target || !this.retryTimer) return false;
+    this.clearRetryTimer();
+    this.openSocket();
+    return true;
   }
 
   /** User-initiated stop: cancels any pending retry and forgets the target. */

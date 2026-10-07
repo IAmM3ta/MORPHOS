@@ -6,7 +6,7 @@ import { GrayScott, PRESET_MITOSIS } from './sim/grayScott';
 import { Canvas2DRenderer } from './render/canvas2d';
 import { HumEngine } from './audio/hum';
 import { TdClient, isSecurePage } from './sync/tdClient';
-import { mountPanelStubs, type PanelId } from './ui/panels';
+import { mountPanelStubs, mountSyncStatus, type PanelId } from './ui/panels';
 
 const SIM_SIZE = 256;
 const STEPS = 2;
@@ -100,6 +100,13 @@ function main(): void {
     else void hum.resume();
   });
 
+  // Live Sync chip: connecting / waiting for ack / live / retry countdown / error.
+  const unmountSync = mountSyncStatus(
+    qs<HTMLElement>('#syncStatus'),
+    document.querySelector<HTMLButtonElement>('#syncRetry'),
+    td,
+  );
+
   const unmountPanels = mountPanelStubs(panels, {
     onPanel: (id: PanelId) => {
       if (id === 'sync') {
@@ -131,7 +138,7 @@ function main(): void {
     (window as unknown as { __morphogen?: unknown }).__morphogen = () => ({
       energy: sim.stats().energy,
       locks: lockCount,
-      td: td.status,
+      td: td.snapshot(),
     });
   }
 
@@ -140,6 +147,7 @@ function main(): void {
     cancelAnimationFrame(raf);
     unmountPanels();
     td.disconnect();
+    unmountSync();
     hum.dispose();
   };
   window.addEventListener('beforeunload', teardown);

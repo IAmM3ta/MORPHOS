@@ -2,6 +2,18 @@
 
 RedBot daily cadence notes for `IAmM3ta/MORPHOS`. Newest first.
 
+## 2026-10-07 (09:00 ET — daily commit)
+
+**Landed:** Morphogen v2 Sync status chip — the reconnect state from 2026-10-06 is now visible and actionable in the UI (REBUILD-SPEC §6 client hardening).
+
+- `morphogen-v2/src/sync/tdClient.ts`: new pure `describeTdStatus(snapshot, now)` → `{ label, tone, countdownMs, canRetryNow }` (one tone per status; countdown from `nextRetryAt`, rounded up, clamped at 0; strings never carry the token). New `TdClient.snapshot()` (plain-data state incl. retry budget) and `TdClient.retryNow()` — skips the remaining backoff with a fresh socket + hello, only while `reconnecting`, never resets the budget, no-op after terminal failures.
+- `morphogen-v2/src/ui/panels.ts`: `mountSyncStatus(chip, retryBtn, td)` renders on every `onStatus` (chaining any existing handler), runs a 250 ms countdown tick only while reconnecting, shows **Retry now** only when it applies, and unmounts cleanly. `index.html` gains `#syncStatus` (`role=status`, `aria-live=polite`, tone colours) + `#syncRetry`; `main.ts` mounts/unmounts it and `?debug=1` exposes `td.snapshot()`.
+- `morphogen-v2/tests/syncStatus.test.mjs`: 6 tests (labels/tones, countdown rounding/clamp, snapshot w/o token, retryNow budget + terminal no-op, chip render/tick/button/unmount with a DOM stub). `npm test` now bundles `tdClient.ts` + `panels.ts`. Docs: SYNC-AUTH.md "Sync status chip" section, morphogen-v2 README, README Changelog. Checks: `npm test` 17/17, `tsc` clean, `npm run build` OK, `check:nowebgl` OK.
+
+**Reviewed:** Sync reconnect backoff (2026-10-06), hello→ack handshake + TD `SyncAuthGate` (2026-10-05), MRPH header describe/peek/dispatch (2026-10-03–04) and MRPH v1–v4 remain intact; no codec or TD-side changes this pass.
+
+**Next focus candidates:** Sync path-picker UI (URL / path / secret entry feeding `connect()`), `*.local` allowlist with confirm, persisted `tdUrl` sanitising, wire real VAE latents into the sketch, spatial hyperprior once the code is a feature map.
+
 ## 2026-10-06 (09:00 ET — daily commit)
 
 **Landed:** Morphogen v2 Sync reconnect backoff + jitter (REBUILD-SPEC §6 client hardening) and the first committed tests for the browser Sync client.

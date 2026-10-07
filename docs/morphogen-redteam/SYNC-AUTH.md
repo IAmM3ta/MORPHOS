@@ -39,6 +39,25 @@ Delay for retry *n* (0-based) is `reconnectDelayMs(n)`: capped exponential backo
 
 Tests: `cd morphogen-v2 && npm test` (node:test with a fake WebSocket + mocked timers — handshake, terminal vs transient classification, backoff timing, budget exhaustion, stale-socket guard).
 
+## Sync status chip (added 2026-10-07)
+
+The footer now has a live Sync chip (`#syncStatus`, `aria-live="polite"`) plus a **Retry now** button, mounted by `mountSyncStatus()` in `morphogen-v2/src/ui/panels.ts`. Text and colour come from the pure `describeTdStatus(td.snapshot(), now)` in `tdClient.ts`:
+
+| `status` | Chip text | Tone |
+|---|---|---|
+| `idle` | Sync off | idle |
+| `connecting` | Sync: connecting… / reconnecting (try n/8)… | busy |
+| `authenticating` | Sync: waiting for TD hello ack… | busy |
+| `open` | Sync: live → TD | ok |
+| `reconnecting` | Sync: TD unreachable — retry n/8 in 2.4 s (live countdown) | warn |
+| `error` | Sync error: `lastError` | error |
+
+- The countdown is recomputed from `nextRetryAt` on a 250 ms tick (`SYNC_COUNTDOWN_TICK_MS`) that exists **only** while `reconnecting`, so it can't drift from the real retry and an idle/live session costs no timers. It rounds up, so it never reads `0.0 s` while a retry is still pending.
+- **Retry now** is visible only while `reconnecting`. `TdClient.retryNow()` cancels the pending timer and opens a fresh socket + hello immediately, but does **not** reset the retry budget — mashing it can't exceed 8 tries — and it is a no-op after a terminal failure (`bad_auth`, ack timeout, …), which still needs a deliberate `connect()` with a corrected secret.
+- `snapshot()` returns plain data (status, lastError, attempt, budget, nextRetryAt) and never contains the token; `?debug=1` now exposes it via `__morphogen().td`.
+
+Tests: `morphogen-v2/tests/syncStatus.test.mjs` (labels/tones, countdown rounding + clamping, snapshot, retryNow budget + terminal no-op, chip render/tick/button/unmount with a DOM stub).
+
 ## Reference TD side (`morphogen-v2/td/`)
 
 - `morphogen_sync_auth.py` — pure-Python `SyncAuthGate`, no TouchDesigner imports; tested by `tests/test_td_sync_auth.py`.
@@ -46,4 +65,4 @@ Tests: `cd morphogen-v2 && npm test` (node:test with a fake WebSocket + mocked t
 
 ## Still open (REBUILD-SPEC §6 client hardening)
 
-Path-picker UI (and surfacing `reconnecting` / retry countdown in the Sync panel), `*.local` allowlist with confirm, persisted `tdUrl` sanitising. wss (path C) is still required for anything beyond a trusted LAN — the timestamp window is a replay speed bump, not transport security.
+Path-picker UI (URL / path / secret entry — the status chip above is only the read-out half), `*.local` allowlist with confirm, persisted `tdUrl` sanitising. wss (path C) is still required for anything beyond a trusted LAN — the timestamp window is a replay speed bump, not transport security.

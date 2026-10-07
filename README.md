@@ -110,6 +110,7 @@ MORPHOS under RedBot ops. Daily commits refine architecture, docs, and eval harn
 
 ### Changelog
 
+- **2026-10-07 (09:00 ET)** — Morphogen v2 Sync status chip: live footer read-out of the Sync state with a retry countdown (`describeTdStatus`, `mountSyncStatus`) and a **Retry now** button (`TdClient.retryNow()` skips the wait but keeps the 8-try budget; no-op after auth failures); `snapshot()`; 6 new tests (`morphogen-v2/tests/syncStatus.test.mjs`, 17 total); [SYNC-AUTH.md](docs/morphogen-redteam/SYNC-AUTH.md#sync-status-chip-added-2026-10-07); [STATUS.md](STATUS.md).
 - **2026-10-06 (09:00 ET)** — Morphogen v2 Sync reconnect backoff: transient drops retry with capped exponential backoff + equal jitter (`reconnectDelayMs`, 8-try budget, `reconnecting` status); auth rejects / ack timeouts stay terminal; first committed client tests (`morphogen-v2/tests/tdClient.test.mjs`, `npm test`); [SYNC-AUTH.md](docs/morphogen-redteam/SYNC-AUTH.md#reconnect-backoff-added-2026-10-06); [STATUS.md](STATUS.md).
 - **2026-10-05 (09:00 ET)** — Morphogen v2 Sync auth hardening: hello→ack handshake in `tdClient.ts` (no telemetry before TD acks; 2 s timeout; token checks), reference TD gate `morphogen-v2/td/` + `tests/test_td_sync_auth.py`; [SYNC-AUTH.md](docs/morphogen-redteam/SYNC-AUTH.md); [STATUS.md](STATUS.md).
 - **2026-10-04 (09:00 ET)** — MRPH header describe (`mrph_describe_header`) + train-sketch pack peek/dispatch wire-up; truncated-header tests; entropy/training docs; [STATUS.md](STATUS.md).
