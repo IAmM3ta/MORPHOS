@@ -58,6 +58,33 @@ The footer now has a live Sync chip (`#syncStatus`, `aria-live="polite"`) plus a
 
 Tests: `morphogen-v2/tests/syncStatus.test.mjs` (labels/tones, countdown rounding + clamping, snapshot, retryNow budget + terminal no-op, chip render/tick/button/unmount with a DOM stub).
 
+## Sync URL allowlist + persisted settings (added 2026-10-08)
+
+Every TD URL now goes through `sanitizeTdUrl()` in `morphogen-v2/src/sync/syncUrl.ts` before `validateTdUrl()` checks the path, and `TdClient.connect()` opens the **canonical** URL it returns, never the raw paste. This closes red-team H-WS (any URL accepted) and M-PERSIST (`tdUrl` rehydrated unsanitised).
+
+**Sanitising.** Only `ws://` / `wss://`, at most 512 chars, no spaces or control characters (which `URL()` would silently strip, letting look-alike pastes through), no `user:pass@` (it only leaks into storage — use the Sync secret field), fragment dropped, scheme and host lower-cased. Error reasons are fixed strings and never echo the input.
+
+**Host allowlist** (`classifyTdHost`, REBUILD-SPEC §6):
+
+| Host | Class | Path A companion (`ws://`) | Path C (`wss://`) |
+|---|---|---|---|
+| `127.0.0.1`, `localhost`, `[::1]` | loopback | allowed (not from an https page) | allowed |
+| `name.local`, `td.stage.local` (plain DNS labels) | mdns | allowed (not from an https page) | allowed |
+| anything else, incl. LAN IPs and `localhost.evil.com` | remote | **refused** — confirming can't make cleartext telemetry to a remote host OK | needs `connect(…, { confirmRemote: true })` after the user accepts `remoteConfirmMessage(host)` |
+
+LAN IPs (`192.168.x.x`) are deliberately "remote": the confirm is one click, and private addresses are exactly what tunnels and shared Wi-Fi hand out. Use `*.local` for a trusted LAN TD box.
+
+**Persisted settings.** `loadSyncSettings()` / `saveSyncSettings()` own the `localStorage` key `morphogen-v2.sync`, stored as `{ v:1, url, path, grid }` and nothing else:
+
+- On load, bad JSON, a wrong version, a non-object, an unknown path or a URL that fails sanitising wipes the key and returns defaults with `dropped` set to the reason. Only the three known fields are read (no object spread), so `__proto__` or extra keys are inert.
+- The auth token is never part of the record; a stored `auth` field (old build or tampering) is ignored and the key rewritten without it.
+- A remote host always comes back with `needsConfirm: true`. Confirms are per session and are **not** persisted, so tampered storage on a shared machine can't silently point the next session at someone else's wss endpoint.
+- If `grid` isn't stored, it defaults on only for loopback (`defaultTdGrid`), since 256 floats per pump is cheap locally and costly over Wi-Fi or tunnels (Elliot M2).
+
+`main.ts` loads the record at start-up (`?debug=1` shows it in `__morphogen().sync`); the path-picker UI will be the first caller of `saveSyncSettings` and the confirm prompt.
+
+Tests: `morphogen-v2/tests/syncUrl.test.mjs` (12 tests: host classes, canonical form, rejection reasons that don't echo input, per-path validation and the remote confirm, connect opening only the canonical URL, save/load round-trip, corrupt/tampered records wiped, secret scrubbed, throwing storage).
+
 ## Reference TD side (`morphogen-v2/td/`)
 
 - `morphogen_sync_auth.py` — pure-Python `SyncAuthGate`, no TouchDesigner imports; tested by `tests/test_td_sync_auth.py`.
@@ -65,4 +92,4 @@ Tests: `morphogen-v2/tests/syncStatus.test.mjs` (labels/tones, countdown roundin
 
 ## Still open (REBUILD-SPEC §6 client hardening)
 
-Path-picker UI (URL / path / secret entry — the status chip above is only the read-out half), `*.local` allowlist with confirm, persisted `tdUrl` sanitising. wss (path C) is still required for anything beyond a trusted LAN — the timestamp window is a replay speed bump, not transport security.
+Path-picker UI (URL / path / secret entry feeding `connect()`, the remote-host confirm and `saveSyncSettings` — the status chip and URL hygiene above are the plumbing it sits on). Pause the pump while `document.hidden` (`bufferedAmount` backpressure is already in the pump). wss (path C) is still required for anything beyond a trusted LAN — the timestamp window is a replay speed bump, not transport security.

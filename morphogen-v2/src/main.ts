@@ -6,6 +6,7 @@ import { GrayScott, PRESET_MITOSIS } from './sim/grayScott';
 import { Canvas2DRenderer } from './render/canvas2d';
 import { HumEngine } from './audio/hum';
 import { TdClient, isSecurePage } from './sync/tdClient';
+import { loadSyncSettings } from './sync/syncUrl';
 import { mountPanelStubs, mountSyncStatus, type PanelId } from './ui/panels';
 
 const SIM_SIZE = 256;
@@ -36,6 +37,15 @@ function main(): void {
   const renderer = new Canvas2DRenderer(canvas);
   const hum = new HumEngine();
   const td = new TdClient(''); // auth required before real connect
+  // Persisted Sync record: schema-checked + URL re-sanitised on load; never holds
+  // the secret; a remote host comes back needsConfirm (path-picker UI will ask).
+  let storage: Storage | null = null;
+  try {
+    storage = window.localStorage;
+  } catch {
+    storage = null; // private mode / sandboxed iframe
+  }
+  const syncSettings = loadSyncSettings(storage);
   let lockCount = 0;
   let running = false;
   let raf = 0;
@@ -139,6 +149,7 @@ function main(): void {
       energy: sim.stats().energy,
       locks: lockCount,
       td: td.snapshot(),
+      sync: syncSettings,
     });
   }
 

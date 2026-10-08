@@ -2,6 +2,18 @@
 
 RedBot daily cadence notes for `IAmM3ta/MORPHOS`. Newest first.
 
+## 2026-10-08 (09:00 ET — daily commit)
+
+**Landed:** Morphogen v2 Sync URL hygiene — host allowlist with remote confirm + sanitised, schema-checked persisted Sync settings (REBUILD-SPEC §6 client hardening; red-team H-WS, M-PERSIST, static #2/#8).
+
+- New `morphogen-v2/src/sync/syncUrl.ts` (pure): `classifyTdHost` (loopback / `*.local` mdns / remote — LAN IPs and look-alikes like `localhost.evil.com` are remote), `sanitizeTdUrl` (ws/wss only, ≤512 chars, rejects whitespace/control chars and `user:pass@`, drops fragment, canonical form; reasons never echo input), `tdUrlNeedsConfirm`, `remoteConfirmMessage`, `defaultTdGrid` (on only for loopback), and `loadSyncSettings` / `saveSyncSettings` for `localStorage` key `morphogen-v2.sync` → `{ v:1, url, path, grid }` only: corrupt/tampered records wiped with a `dropped` reason, stray keys inert, a stored `auth` scrubbed, remote hosts always rehydrate `needsConfirm:true` (confirms are never persisted).
+- `morphogen-v2/src/sync/tdClient.ts`: `validateTdUrl(url, path, { confirmRemote })` now sanitises first and returns the canonical `url` + `hostClass`; companion accepts loopback **and `*.local`** over ws but refuses remote hosts even with a confirm; wss remote hosts return `needsConfirm` until confirmed. `connect(url, path, getPayload, opts)` opens the canonical URL, never the raw paste. `main.ts` loads the persisted record at start-up (`?debug=1` → `__morphogen().sync`).
+- `morphogen-v2/tests/syncUrl.test.mjs`: 12 tests; `npm test` bundles `syncUrl.ts` too. Docs: SYNC-AUTH.md "Sync URL allowlist + persisted settings" section + refreshed "Still open", morphogen-v2 README, README Changelog. Checks: `npm test` 29/29, `tsc` clean, `npm run build` OK, `check:nowebgl` OK.
+
+**Reviewed:** Sync status chip (2026-10-07), reconnect backoff (2026-10-06), hello→ack handshake + TD `SyncAuthGate` (2026-10-05) and the MRPH v1–v4 codec stack remain intact; no codec or TD-side changes this pass.
+
+**Next focus candidates:** Sync path-picker UI (URL / path / secret entry + remote confirm + `saveSyncSettings`), pause the Sync pump while `document.hidden`, wire real VAE latents into the sketch, spatial hyperprior once the code is a feature map.
+
 ## 2026-10-07 (09:00 ET — daily commit)
 
 **Landed:** Morphogen v2 Sync status chip — the reconnect state from 2026-10-06 is now visible and actionable in the UI (REBUILD-SPEC §6 client hardening).

@@ -9,7 +9,7 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "check:nowebgl": "rg -n -i \"webgl|webgpu|getContext\\(['\\\"]webgl\" src && exit 1 || echo 'OK: no GPU canvas context APIs in src'",
-    "test": "esbuild tdClient=src/sync/tdClient.ts panels=src/ui/panels.ts --bundle --format=esm --platform=neutral --outdir=.test-build --out-extension:.js=.mjs --log-level=warning && node --test tests/"
+    "test": "esbuild tdClient=src/sync/tdClient.ts syncUrl=src/sync/syncUrl.ts panels=src/ui/panels.ts --bundle --format=esm --platform=neutral --outdir=.test-build --out-extension:.js=.mjs --log-level=warning && node --test tests/"
   },
   "devDependencies": {
     "esbuild": "^0.21.5",

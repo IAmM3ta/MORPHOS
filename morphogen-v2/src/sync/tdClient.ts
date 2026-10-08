@@ -19,7 +19,14 @@
  *   bad URL / token, TD's ok:false ack, ack timeout, or a close mid-handshake —
  *   retrying those would only burn TD's bad-hello budget with the same secret.
  *   Every retry is a fresh socket + fresh hello (no auth state is reused).
+ *
+ * URL hygiene (2026-10-08, see ./syncUrl.ts): every URL goes through
+ * sanitizeTdUrl() and the host allowlist (127.0.0.1 / localhost / *.local);
+ * other wss hosts need an explicit per-session confirm, and the socket is
+ * opened on the canonical URL, never the raw paste.
  */
+
+import { sanitizeTdUrl, type TdHostClass } from './syncUrl';
 
 export type SyncPath = 'companion' | 'midi' | 'wss';
 
@@ -98,36 +105,59 @@ export type TdTelemetry = {
   grid?: number[];
 };
 
-const LOCAL_ALLOW = new Set(['127.0.0.1', 'localhost']);
-
 export function isSecurePage(): boolean {
   return typeof location !== 'undefined' && location.protocol === 'https:';
 }
 
-export function validateTdUrl(url: string, path: SyncPath): { ok: boolean; reason?: string } {
-  let u: URL;
-  try {
-    u = new URL(url);
-  } catch {
-    return { ok: false, reason: 'Invalid URL' };
-  }
+export type TdUrlCheck = {
+  ok: boolean;
+  reason?: string;
+  /** Canonical URL from sanitizeTdUrl — connect() opens this, not the raw input. */
+  url?: string;
+  hostClass?: TdHostClass;
+  /** Set when the only thing missing is the user's confirm for a remote host. */
+  needsConfirm?: boolean;
+};
+
+export type TdUrlCheckOptions = {
+  /** The user has confirmed this remote host for this session (never persisted). */
+  confirmRemote?: boolean;
+};
+
+/**
+ * Path-aware URL gate (2026-10-08: allowlist from REBUILD-SPEC §6).
+ *   A companion — cleartext ws:// only to loopback or *.local, and never from an
+ *                 https:// page (mixed content). Remote hosts are refused outright:
+ *                 cleartext telemetry over the internet has no confirm that makes it OK.
+ *   B midi      — no WebSocket at all.
+ *   C wss       — wss:// only. Loopback / *.local pass; any other host needs
+ *                 `confirmRemote` (remoteConfirmMessage() is the prompt text).
+ */
+export function validateTdUrl(url: string, path: SyncPath, opts: TdUrlCheckOptions = {}): TdUrlCheck {
   if (path === 'midi') return { ok: false, reason: 'MIDI path does not use WebSocket' };
+  const s = sanitizeTdUrl(url);
+  if (!s.ok) return { ok: false, reason: s.reason };
+  const base = { url: s.url, hostClass: s.hostClass };
   if (path === 'companion') {
-    if (u.protocol !== 'ws:') return { ok: false, reason: 'Companion path expects ws://' };
-    if (!LOCAL_ALLOW.has(u.hostname)) {
-      return { ok: false, reason: 'Companion allowlist: 127.0.0.1 / localhost' };
+    if (s.scheme !== 'ws:') return { ok: false, reason: 'Companion path expects ws://', ...base };
+    if (s.hostClass === 'remote') {
+      return { ok: false, reason: 'Companion allowlist: 127.0.0.1 / localhost / *.local — use wss (C) for other hosts', ...base };
     }
     if (isSecurePage()) {
       return {
         ok: false,
         reason: 'This page is HTTPS — use companion http://127.0.0.1 controller (path A) or MIDI (B) or wss (C)',
+        ...base,
       };
     }
-    return { ok: true };
+    return { ok: true, ...base };
   }
   // path C
-  if (u.protocol !== 'wss:') return { ok: false, reason: 'Advanced path expects wss://' };
-  return { ok: true };
+  if (s.scheme !== 'wss:') return { ok: false, reason: 'Advanced path expects wss://', ...base };
+  if (s.hostClass === 'remote' && !opts.confirmRemote) {
+    return { ok: false, reason: `Confirm remote TD host ${s.host} before connecting`, needsConfirm: true, ...base };
+  }
+  return { ok: true, ...base };
 }
 
 /**
@@ -289,11 +319,15 @@ export class TdClient {
     };
   }
 
-  /** User-initiated connect: resets the retry budget, then opens a socket. */
-  connect(url: string, path: SyncPath, getPayload: () => TdTelemetry): void {
+  /**
+   * User-initiated connect: resets the retry budget, then opens a socket to the
+   * *sanitised* URL. Remote wss hosts need `opts.confirmRemote` (the UI asks with
+   * remoteConfirmMessage()); without it this lands in 'error' and opens nothing.
+   */
+  connect(url: string, path: SyncPath, getPayload: () => TdTelemetry, opts: TdUrlCheckOptions = {}): void {
     this.disconnect();
-    const check = validateTdUrl(url, path);
-    if (!check.ok) {
+    const check = validateTdUrl(url, path, opts);
+    if (!check.ok || !check.url) {
       this.setError(check.reason ?? 'rejected');
       return;
     }
@@ -302,7 +336,7 @@ export class TdClient {
       this.setError(tok.reason ?? 'Auth token rejected');
       return;
     }
-    this.target = { url, path, getPayload };
+    this.target = { url: check.url, path, getPayload };
     this.reconnectAttempt = 0;
     this.openSocket();
   }
