@@ -6,7 +6,7 @@ First-principles rebuild of the Morphogen live AV instrument.
 
 ## Architecture (10 lines)
 
-1. **Sim** — `src/sim/grayScott.ts`: Float32 U/V buffers, portable JS kernel, worker-ready API (main-thread demo for now).
+1. **Sim** — `src/sim/grayScott.ts`: Float32 U/V buffers, portable JS kernel, worker-ready API (main-thread demo for now). Every param update goes through `sanitizeParams` (`PARAM_LIMITS`), `step(dt)` clamps dt to `maxStableDt` (D·dt ≤ 1/4) and NaN cells are scrubbed to 0.
 2. **Render** — `src/render/canvas2d.ts`: palette map → `ImageData` → `putImageData` only.
 3. **Audio** — `src/audio/hum.ts`: Schumann-inspired Hum; unlock on gesture; limiter; **`dispose()` on teardown**.
 4. **Sync** — `src/sync/tdClient.ts`: paths **A** companion `http://127.0.0.1` + `ws://`, **B** MIDI-only on HTTPS, **C** auth `wss`; hello includes `auth`, telemetry waits for TD's `{ack, ok:true}` (2 s timeout); transient drops reconnect with jittered exponential backoff (auth rejects never retry); footer Sync chip shows state + live retry countdown with a budget-respecting **Retry now**. `src/sync/syncUrl.ts` sanitises every URL, enforces the `127.0.0.1` / `localhost` / `*.local` allowlist (other wss hosts need a per-session confirm) and schema-checks the persisted Sync record (no secret stored).
@@ -45,7 +45,7 @@ Open `http://127.0.0.1:5173` → ENTER → click/drag to seed colonies.
 ```bash
 npm run build
 npm run check:nowebgl
-npm test            # Sync client, status chip + URL hygiene: handshake, backoff, countdown/retry-now, allowlist, persisted settings (node:test, fake WebSocket)
+npm test            # Gray–Scott kernel guards (param clamp, dt stability, NaN containment) + Sync client, status chip + URL hygiene: handshake, backoff, countdown/retry-now, allowlist, persisted settings (node:test, fake WebSocket)
 ```
 
 ## Operator kill-list

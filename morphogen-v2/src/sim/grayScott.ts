@@ -37,6 +37,42 @@ export const PRESETS: Record<string, RdParams & { name: string }> = {
   uskate: { name: 'Skate', feed: 0.062, kill: 0.0609, du: 0.16, dv: 0.08 },
 };
 
+/**
+ * Safe ranges for each knob. Anything from the UI, MIDI CC map or a Sync
+ * payload goes through {@link sanitizeParams} before it reaches the kernel,
+ * so a NaN or out-of-range value can't poison the field. (Without the guard
+ * a single NaN feed turns every cell NaN on the next step, and the clamp
+ * `Math.max(0, NaN)` keeps it NaN forever: a black canvas until Reset.)
+ */
+export const PARAM_LIMITS: Record<keyof RdParams, readonly [number, number]> = {
+  feed: [0, 0.1],
+  kill: [0, 0.1],
+  du: [0, 0.25],
+  dv: [0, 0.25],
+};
+
+/** Clamp each knob into {@link PARAM_LIMITS}; non-finite values fall back to `fallback`. */
+export function sanitizeParams(p: Partial<RdParams>, fallback: RdParams = PRESET_MITOSIS): RdParams {
+  const out = { ...fallback };
+  for (const key of Object.keys(PARAM_LIMITS) as (keyof RdParams)[]) {
+    const raw = p[key];
+    if (typeof raw !== 'number' || !Number.isFinite(raw)) continue;
+    const [lo, hi] = PARAM_LIMITS[key];
+    out[key] = Math.min(hi, Math.max(lo, raw));
+  }
+  return out;
+}
+
+/**
+ * Largest explicit-Euler timestep that keeps the diffusion term stable on the
+ * 5-point Laplacian with unit grid spacing: D·dt ≤ 1/4 for the faster of U/V.
+ * Presets (du = 0.16) allow dt ≤ 1.5625, so the default dt = 1 has headroom.
+ */
+export function maxStableDt(p: Pick<RdParams, 'du' | 'dv'>): number {
+  const d = Math.max(p.du, p.dv);
+  return d > 0 ? 0.25 / d : Infinity;
+}
+
 export class GrayScott {
   readonly width: number;
   readonly height: number;
@@ -54,8 +90,13 @@ export class GrayScott {
     this.v = new Float32Array(n);
     this.u2 = new Float32Array(n);
     this.v2 = new Float32Array(n);
-    this.params = { ...params };
+    this.params = sanitizeParams(params);
     this.reset();
+  }
+
+  /** Apply a (possibly partial or untrusted) parameter update through {@link sanitizeParams}. */
+  setParams(p: Partial<RdParams>): void {
+    this.params = sanitizeParams(p, this.params);
   }
 
   reset(): void {
@@ -88,9 +129,16 @@ export class GrayScott {
     }
   }
 
+  /**
+   * One explicit-Euler step on a toroidal grid. `dt` is clamped to
+   * {@link maxStableDt} (and non-finite / non-positive dt is a no-op) so a
+   * caller can't push the solver into the oscillating blow-up regime.
+   */
   step(dt = 1): void {
     const { width: w, height: h, params } = this;
     const { feed: f, kill: k, du, dv } = params;
+    if (!Number.isFinite(dt) || dt <= 0) return;
+    dt = Math.min(dt, maxStableDt(params));
     const u = this.u;
     const v = this.v;
     const uN = this.u2;
@@ -115,10 +163,13 @@ export class GrayScott {
       }
     }
 
-    // clamp + swap
+    // clamp + copy back. `x > 0 ? … : 0` (rather than Math.max) also maps NaN
+    // to 0, so one bad cell can't spread through the Laplacian forever.
     for (let i = 0; i < u.length; i++) {
-      u[i] = Math.min(1, Math.max(0, uN[i]));
-      v[i] = Math.min(1, Math.max(0, vN[i]));
+      const a = uN[i];
+      const b = vN[i];
+      u[i] = a > 0 ? (a < 1 ? a : 1) : 0;
+      v[i] = b > 0 ? (b < 1 ? b : 1) : 0;
     }
   }
 

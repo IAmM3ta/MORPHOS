@@ -2,6 +2,17 @@
 
 RedBot daily cadence notes for `IAmM3ta/MORPHOS`. Newest first.
 
+## 2026-10-09 (09:30 ET — daily commit)
+
+**Landed:** Morphogen v2 CPU Gray–Scott kernel guards — parameter sanitising, explicit-Euler dt stability clamp and NaN containment, plus the kernel's first tests.
+
+- `morphogen-v2/src/sim/grayScott.ts`: new `PARAM_LIMITS` (feed/kill 0–0.1, du/dv 0–0.25), `sanitizeParams` (clamps range, ignores non-finite / non-number values such as a stringly MIDI or Sync payload) and `maxStableDt` (D·dt ≤ 1/4 on the 5-point Laplacian; presets allow dt ≤ 1.5625). Constructor and new `setParams` route through the sanitiser; `step(dt)` clamps dt to the stable bound and treats NaN / ≤0 dt as a no-op; the clamp-back loop now maps NaN to 0 so one bad cell can't spread through the Laplacian (previously `Math.max(0, NaN)` kept it NaN forever — black canvas until Reset).
+- `morphogen-v2/tests/grayScott.test.mjs`: 9 tests (presets in range and stable, sanitiser, setParams merge, dt clamp under dt=50, NaN/0/negative dt no-op, NaN cell scrubbed, mitosis growth + centred centroid, grid16 block means); `npm test` bundles `grayScott.ts` too. Checks: `npm test` 38/38, `tsc --noEmit` clean.
+
+**Reviewed:** Sync URL hygiene (2026-10-08), status chip, backoff and handshake remain intact; no Sync, TD-side or codec changes this pass.
+
+**Next focus candidates:** wire Field-panel sliders / MIDI CC through `setParams`, move the kernel into a Worker, Sync path-picker UI, pause the Sync pump while `document.hidden`.
+
 ## 2026-10-08 (09:00 ET — daily commit)
 
 **Landed:** Morphogen v2 Sync URL hygiene — host allowlist with remote confirm + sanitised, schema-checked persisted Sync settings (REBUILD-SPEC §6 client hardening; red-team H-WS, M-PERSIST, static #2/#8).
