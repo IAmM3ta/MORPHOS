@@ -2,6 +2,17 @@
 
 RedBot daily cadence notes for `IAmM3ta/MORPHOS`. Newest first.
 
+## 2026-10-10 (09:10 ET — daily commit)
+
+**Landed:** Morphogen v2 Hum audio safety — NaN-safe, throttled modulation, remembered mute, anchored gain ramps with a hard ceiling, complete teardown, plus the audio engine's first tests.
+
+- `morphogen-v2/src/audio/hum.ts`: new exports `HUM_PARTIALS` / `HUM_PARTIAL_LEVELS` / `HUM_LEVEL_ON|OFF` / `HUM_MAX_DETUNE` and pure `energyToDetune` (non-finite or negative energy → 0, clamped to 2 %, quantised to 0.05 %). `modulate()` now schedules a new `setTargetAtTime` only when the quantised detune changes — previously every 60 fps frame queued 4 automation events (~14k/min) and a NaN energy would have thrown inside `setTargetAtTime`. `setMuted()` is remembered across unlock (muting before ENTER no longer gets overwritten by the 0.8 s ramp-in) and every ramp is anchored with `setValueAtTime`, clamped to `HUM_LEVEL_ON`, so a cancel mid-ramp can't jump. `dispose()` now also disconnects the compressor node (it was leaked), and `unlock()` resolves false if `dispose()` ran during a pending `resume()`. The AudioContext is created through an injectable factory (default: `window.AudioContext` / webkit) so the engine is testable headless; `resume()` is a no-op once disposed.
+- `morphogen-v2/tests/hum.test.mjs`: 8 tests against a fake AudioContext (detune mapping, graph build + anchored ramp-in, no-AudioContext inert path, mute-before-unlock, ceiling/anchor on setMuted, 600-frame flat-energy throttle + NaN, full dispose incl. compressor, dispose-during-resume). `npm test` bundles `hum.ts` too. Checks: `npm test` 46/46, `tsc --noEmit` clean, `check:nowebgl` OK.
+
+**Reviewed:** Gray–Scott guards (2026-10-09) and the Sync stack unchanged; `main.ts` call sites (`modulate` per frame, `suspend`/`resume` on visibility, `dispose` on teardown) work as-is with the new behaviour.
+
+**Next focus candidates:** wire a Sound-panel mute toggle to `setMuted`, Field-panel sliders / MIDI CC through `setParams`, move the kernel into a Worker, Sync path-picker UI.
+
 ## 2026-10-09 (09:30 ET — daily commit)
 
 **Landed:** Morphogen v2 CPU Gray–Scott kernel guards — parameter sanitising, explicit-Euler dt stability clamp and NaN containment, plus the kernel's first tests.
