@@ -2,6 +2,17 @@
 
 RedBot daily cadence notes for `IAmM3ta/MORPHOS`. Newest first.
 
+## 2026-10-11 (09:20 ET — daily commit)
+
+**Landed:** Morphogen v2 Canvas 2D renderer hardening — a precomputed palette lookup table, NaN-safe per-pixel tone, bounded buffer fills and safe resize, plus the renderer's first tests.
+
+- `morphogen-v2/src/render/canvas2d.ts`: new exports `PALETTE_LUT` / `PALETTE_STEPS` (256 opaque RGBA entries, same dark → cyan ramp; replaces three `Math.floor` calls per pixel per frame with one table lookup), pure `fieldTone(v, u)` (clamped to [0, 1]; non-finite → 0 so a NaN cell renders as background for that pixel only), DOM-free `fieldToRGBA(field, out)` (writes min(w·h, |u|, |v|, |out|/4) pixels and returns the count — never reads or writes past a short buffer) and `safeDim` (0 / negative / NaN / fractional sizes → integer ≥ 1, so `createImageData` can't throw mid-render). `draw()` now compares against the ImageData size rather than the canvas attributes and accepts any `{width, height, u, v}` field view.
+- `morphogen-v2/tests/canvas2d.test.mjs`: 7 tests with a fake canvas (LUT endpoints + monotone channels, tone clamp/NaN, NaN cell isolation, short-buffer bounds, `safeDim`, opaque-2d context request + unavailable path, 0×0 canvas resize-once). `npm test` bundles `canvas2d.ts` too. Checks: `npm test` 53/53, `tsc --noEmit` clean, `check:nowebgl` OK.
+
+**Reviewed:** Hum audio safety (2026-10-10), Gray–Scott guards (2026-10-09) and the Sync stack unchanged; `main.ts` call sites (`new Canvas2DRenderer(canvas)`, `renderer.draw(sim)`) work as-is.
+
+**Next focus candidates:** Sound-panel mute toggle wired to `setMuted`, Field-panel sliders / MIDI CC through `setParams`, move the kernel into a Worker, Sync path-picker UI.
+
 ## 2026-10-10 (09:10 ET — daily commit)
 
 **Landed:** Morphogen v2 Hum audio safety — NaN-safe, throttled modulation, remembered mute, anchored gain ramps with a hard ceiling, complete teardown, plus the audio engine's first tests.
