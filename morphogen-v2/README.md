@@ -10,7 +10,7 @@ First-principles rebuild of the Morphogen live AV instrument.
 2. **Render** — `src/render/canvas2d.ts`: precomputed 256-step `PALETTE_LUT` → `ImageData` → `putImageData` only; `fieldTone` maps NaN cells to background, `fieldToRGBA` never reads past short buffers, `resize` coerces sizes to integers ≥ 1.
 3. **Audio** — `src/audio/hum.ts`: Schumann-inspired Hum; unlock on gesture; compressor + limiter; master gain capped at `HUM_LEVEL_ON` with anchored ramps; mute remembered across unlock; `modulate()` NaN-safe and only schedules on a real detune change; **`dispose()` on teardown** disconnects every node.
 4. **Sync** — `src/sync/tdClient.ts`: paths **A** companion `http://127.0.0.1` + `ws://`, **B** MIDI-only on HTTPS, **C** auth `wss`; hello includes `auth`, telemetry waits for TD's `{ack, ok:true}` (2 s timeout); transient drops reconnect with jittered exponential backoff (auth rejects never retry); footer Sync chip shows state + live retry countdown with a budget-respecting **Retry now**. `src/sync/syncUrl.ts` sanitises every URL, enforces the `127.0.0.1` / `localhost` / `*.local` allowlist (other wss hosts need a per-session confirm) and schema-checks the persisted Sync record (no secret stored).
-5. **UI** — panel stubs Field / Image / Body / Sound / Sync; explicit Lock loop; Reset confirm; `?perform=1`.
+5. **UI** — `src/ui/panels.ts`: panel stubs Field / Image / Body / Sound / Sync routed by `resolvePanelAction` (clicks on a button's children still land, unknown `data-panel` ids and disabled controls are ignored); explicit Lock loop capped at `LOOP_MAX` = 4 (`nextLockCount`); Reset asks to confirm only when loops are locked (`resetNeedsConfirm`); **Hum on / Hum muted** button (`#muteHum`, `aria-pressed`) wired to `HumEngine.setMuted`, safe before ENTER; `?perform=1`.
 6. **Privacy** — gyro opt-in / mic+Sync consent / camera perf mode specified in REBUILD-SPEC (stubs here).
 7. **Fonts** — system stack only (no Google Fonts).
 8. **PWA** — `manifest.webmanifest` name **Morphogen**.
@@ -45,7 +45,7 @@ Open `http://127.0.0.1:5173` → ENTER → click/drag to seed colonies.
 ```bash
 npm run build
 npm run check:nowebgl
-npm test            # Canvas 2D renderer (palette LUT, NaN-safe tone, bounded fill, safe resize) + Hum audio safety (fake AudioContext) + Gray–Scott kernel guards (param clamp, dt stability, NaN containment) + Sync client, status chip + URL hygiene: handshake, backoff, countdown/retry-now, allowlist, persisted settings (node:test, fake WebSocket)
+npm test            # Panel routing + Sound mute toggle (loop cap, reset confirm, ancestor walk) + Canvas 2D renderer (palette LUT, NaN-safe tone, bounded fill, safe resize) + Hum audio safety (fake AudioContext) + Gray–Scott kernel guards (param clamp, dt stability, NaN containment) + Sync client, status chip + URL hygiene: handshake, backoff, countdown/retry-now, allowlist, persisted settings (node:test, fake WebSocket)
 ```
 
 ## Operator kill-list

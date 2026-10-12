@@ -2,6 +2,18 @@
 
 RedBot daily cadence notes for `IAmM3ta/MORPHOS`. Newest first.
 
+## 2026-10-12 (09:35 ET — daily commit)
+
+**Landed:** Morphogen v2 panel input hygiene and the Sound-panel mute toggle, plus the panels' first routing tests.
+
+- `morphogen-v2/src/ui/panels.ts`: new pure `resolvePanelAction(target, root)` replaces the old "look only at `ev.target`" handler. It walks up to 4 ancestors (so a click on a `<span>`/icon inside a button still routes), stops at the panel root, ignores disabled controls, and validates `data-panel` through `isPanelId` (own-key check, so `toString` / `__proto__` / typos are dropped instead of rendering `panel: undefined`). The Lock-loop and Reset rules that lived inline in `main.ts` are now `LOOP_MAX` (4), `nextLockCount` (NaN / negative / fractional counts restart cleanly) and `resetNeedsConfirm`. New `mountMuteToggle(btn, hum)` + `describeMute` mirror `HumEngine.isMuted` into the label (**Hum on** / **Hum muted**) and `aria-pressed`; mounting never touches the engine, and because HumEngine remembers mute across unlock, muting on the gate keeps the ramp-in from starting.
+- `morphogen-v2/index.html` / `src/main.ts`: `#muteHum` button added to the panel bar and routed via `onMuteToggle`; Lock loop reports `(max)` at the cap.
+- `morphogen-v2/tests/panels.test.mjs`: 9 tests (panel-id guard incl. prototype keys, loop cap + corrupt counts, reset-confirm rule, direct + child-element routing, unknown/disabled ignored, root boundary + bounded walk, `mountPanelStubs` dispatch/note/unmount, mute toggle label + `aria-pressed` + no engine call on mount). Checks: `npm test` 62/62, `tsc --noEmit` clean, `vite build` OK, `check:nowebgl` OK.
+
+**Reviewed:** Canvas 2D renderer (2026-10-11), Hum audio safety (2026-10-10), Gray–Scott guards (2026-10-09) and the Sync stack unchanged; `mountSyncStatus` untouched.
+
+**Next focus candidates:** Field-panel sliders / MIDI CC through `setParams`, an `m` keyboard shortcut for mute (ignoring text inputs), move the kernel into a Worker, Sync path-picker UI.
+
 ## 2026-10-11 (09:20 ET — daily commit)
 
 **Landed:** Morphogen v2 Canvas 2D renderer hardening — a precomputed palette lookup table, NaN-safe per-pixel tone, bounded buffer fills and safe resize, plus the renderer's first tests.

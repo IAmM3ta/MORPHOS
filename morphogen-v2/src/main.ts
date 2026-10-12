@@ -7,7 +7,15 @@ import { Canvas2DRenderer } from './render/canvas2d';
 import { HumEngine } from './audio/hum';
 import { TdClient, isSecurePage } from './sync/tdClient';
 import { loadSyncSettings } from './sync/syncUrl';
-import { mountPanelStubs, mountSyncStatus, type PanelId } from './ui/panels';
+import {
+  mountMuteToggle,
+  mountPanelStubs,
+  mountSyncStatus,
+  nextLockCount,
+  resetNeedsConfirm,
+  LOOP_MAX,
+  type PanelId,
+} from './ui/panels';
 
 const SIM_SIZE = 256;
 const STEPS = 2;
@@ -117,6 +125,9 @@ function main(): void {
     td,
   );
 
+  // Sound mute: label + aria-pressed mirror HumEngine; safe before ENTER.
+  const toggleMute = mountMuteToggle(qs<HTMLElement>('#muteHum'), hum);
+
   const unmountPanels = mountPanelStubs(panels, {
     onPanel: (id: PanelId) => {
       if (id === 'sync') {
@@ -129,11 +140,14 @@ function main(): void {
       }
     },
     onLockLoop: () => {
-      lockCount = Math.min(4, lockCount + 1);
-      setStatus(`LOOP ${lockCount}`);
+      lockCount = nextLockCount(lockCount);
+      setStatus(lockCount >= LOOP_MAX ? `LOOP ${lockCount} (max)` : `LOOP ${lockCount}`);
+    },
+    onMuteToggle: () => {
+      setStatus(toggleMute() ? 'hum muted' : 'hum on');
     },
     onReset: () => {
-      if (lockCount > 0) {
+      if (resetNeedsConfirm(lockCount)) {
         const ok = confirm('Clear field and loops?');
         if (!ok) return;
       }

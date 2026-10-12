@@ -1,4 +1,8 @@
-/** Panel stubs — Field / Image / Body / Sound / Sync (parity hooks) + live Sync status chip. */
+/**
+ * Panel stubs — Field / Image / Body / Sound / Sync (parity hooks), Sound mute
+ * toggle and the live Sync status chip. Click routing and loop/reset rules are
+ * pure helpers so tests/panels.test.mjs can cover them without a DOM.
+ */
 import { describeTdStatus, type TdSnapshot, type TdStatus } from '../sync/tdClient';
 
 export type PanelId = 'field' | 'image' | 'body' | 'sound' | 'sync';
@@ -15,23 +19,127 @@ export type PanelHandlers = {
   onPanel?: (id: PanelId) => void;
   onLockLoop?: () => void;
   onReset?: () => void;
+  onMuteToggle?: () => void;
 };
+
+/** Narrow an arbitrary `data-panel` attribute to a known panel (unknown / typo'd ids are ignored). */
+export function isPanelId(x: unknown): x is PanelId {
+  return typeof x === 'string' && Object.prototype.hasOwnProperty.call(PANEL_LABELS, x);
+}
+
+/** Hard ceiling on locked loops (REBUILD-SPEC: explicit Lock loop, 4 slots). */
+export const LOOP_MAX = 4;
+
+/** Next lock count after one "Lock loop" press: +1, capped at LOOP_MAX; a corrupt (NaN / negative / fractional) count restarts from 0. */
+export function nextLockCount(n: number): number {
+  const base = Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
+  return Math.min(LOOP_MAX, base + 1);
+}
+
+/** Reset only asks for confirmation when there is locked work to lose. */
+export function resetNeedsConfirm(lockCount: number): boolean {
+  return Number.isFinite(lockCount) && lockCount > 0;
+}
+
+export type PanelAction =
+  | { kind: 'panel'; id: PanelId }
+  | { kind: 'lock' }
+  | { kind: 'reset' }
+  | { kind: 'mute' };
+
+/** Minimal element shape the router walks (real DOM elements satisfy it; tests pass plain objects). */
+export type ActionTarget = {
+  id?: string;
+  getAttribute(name: string): string | null;
+  hasAttribute?(name: string): boolean;
+  parentElement?: ActionTarget | null;
+};
+
+/** How far up from the click target we look for a control (button → its icon/span children). */
+const ACTION_WALK_LIMIT = 4;
+
+/**
+ * Map a click target to a panel action (2026-10-12). Walks up a few ancestors so a
+ * click on a `<span>` or icon inside a button still routes, stops at `root`, and
+ * ignores disabled controls and unknown `data-panel` values. Previously the
+ * handler only looked at `ev.target` itself and trusted any `data-panel` string.
+ */
+export function resolvePanelAction(
+  target: ActionTarget | null | undefined,
+  root?: ActionTarget | null,
+): PanelAction | null {
+  let el = target ?? null;
+  for (let depth = 0; el && depth < ACTION_WALK_LIMIT; depth++) {
+    if (el.hasAttribute?.('disabled')) return null;
+    const panel = el.getAttribute('data-panel');
+    if (panel !== null) return isPanelId(panel) ? { kind: 'panel', id: panel } : null;
+    if (el.id === 'lockLoop') return { kind: 'lock' };
+    if (el.id === 'resetField') return { kind: 'reset' };
+    if (el.id === 'muteHum') return { kind: 'mute' };
+    if (el === root) break;
+    el = el.parentElement ?? null;
+  }
+  return null;
+}
 
 export function mountPanelStubs(root: HTMLElement, handlers: PanelHandlers): () => void {
   const note = root.querySelector<HTMLElement>('#panelNote');
   const onClick = (ev: Event) => {
-    const t = ev.target as HTMLElement | null;
-    if (!t) return;
-    const panel = t.getAttribute('data-panel') as PanelId | null;
-    if (panel) {
-      handlers.onPanel?.(panel);
-      if (note) note.textContent = `panel: ${PANEL_LABELS[panel]} (stub)`;
+    const action = resolvePanelAction(ev.target as ActionTarget | null, root);
+    if (!action) return;
+    switch (action.kind) {
+      case 'panel':
+        handlers.onPanel?.(action.id);
+        if (note) note.textContent = `panel: ${PANEL_LABELS[action.id]} (stub)`;
+        break;
+      case 'lock':
+        handlers.onLockLoop?.();
+        break;
+      case 'reset':
+        handlers.onReset?.();
+        break;
+      case 'mute':
+        handlers.onMuteToggle?.();
+        break;
     }
-    if (t.id === 'lockLoop') handlers.onLockLoop?.();
-    if (t.id === 'resetField') handlers.onReset?.();
   };
   root.addEventListener('click', onClick);
   return () => root.removeEventListener('click', onClick);
+}
+
+/** The slice of HumEngine the mute button needs. */
+export type MuteSource = {
+  readonly isMuted: boolean;
+  setMuted(muted: boolean): void;
+};
+
+/** Label / pressed state for the Sound mute button (pure, so it is testable). */
+export function describeMute(muted: boolean): { label: string; pressed: 'true' | 'false' } {
+  return muted ? { label: 'Hum muted', pressed: 'true' } : { label: 'Hum on', pressed: 'false' };
+}
+
+/**
+ * Wire the Sound-panel mute button to `HumEngine.setMuted` (2026-10-12).
+ * Works before ENTER: HumEngine remembers the mute across unlock, so pressing
+ * it on the gate keeps the 0.8 s ramp-in from ever starting. Reflects state via
+ * the label and `aria-pressed`. Clicks arrive through `mountPanelStubs`
+ * (`#muteHum` → `onMuteToggle`), so this adds no listener of its own; the
+ * returned `toggle` flips the engine, re-renders and reports the new state
+ * (also usable from a future `m` key / MIDI CC).
+ */
+export function mountMuteToggle(btn: HTMLElement, hum: MuteSource): () => boolean {
+  const render = () => {
+    const view = describeMute(hum.isMuted);
+    btn.textContent = view.label;
+    btn.setAttribute('aria-pressed', view.pressed);
+  };
+  const toggle = () => {
+    hum.setMuted(!hum.isMuted);
+    render();
+    return hum.isMuted;
+  };
+  render();
+  return toggle;
 }
 
 /** The slice of TdClient the status chip needs (keeps the UI testable with a stub). */
