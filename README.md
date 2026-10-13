@@ -83,7 +83,7 @@ See [docs/TRAINING-SKETCH.md](./docs/TRAINING-SKETCH.md) for the frozen-prior tr
 cd morphogen-v2 && npm install && npm run dev
 ```
 
-Open `http://127.0.0.1:5173` → ENTER → drag to seed colonies. `npm run check:nowebgl` must stay clean.
+Open `http://127.0.0.1:5173` → ENTER → drag to seed colonies (**M** mutes the Hum, **L** locks a loop). `npm run check:nowebgl` must stay clean.
 
 ## CLI (codec)
 
@@ -110,6 +110,7 @@ MORPHOS under RedBot ops. Daily commits refine architecture, docs, and eval harn
 
 ### Changelog
 
+- **2026-10-13 (09:40 ET)** — Morphogen v2 keyboard shortcuts: new `src/ui/keys.ts` (**M** = mute Hum, **L** = lock loop; Reset stays click-only). Pure `resolveKeyAction` ignores Ctrl / Cmd / Alt chords, auto-repeat, IME composition, already-handled events and text-entry targets (`isTextEntryTarget`: text-like inputs, textarea, select, contentEditable); `mountKeyboardShortcuts` only calls `preventDefault()` for keys it handled. `main.ts` shares one code path per action between buttons and keys; `aria-keyshortcuts` on `#muteHum` / `#lockLoop`; 7 new tests in `morphogen-v2/tests/keys.test.mjs`. Pushed through the GitHub API this pass (build box offline), so `npm test` / `tsc` were not run yet; the next pass verifies and logs results in [STATUS.md](STATUS.md).
 - **2026-10-12 (09:35 ET)** — Morphogen v2 panel input hygiene + Sound mute toggle: `resolvePanelAction` routes clicks on a button's child elements, ignores unknown `data-panel` ids and disabled controls; Lock-loop cap and Reset-confirm rules moved out of `main.ts` into pure `nextLockCount` / `resetNeedsConfirm`; new **Hum on / Hum muted** button (`#muteHum`, `aria-pressed`) wired to `HumEngine.setMuted`; first panel tests (`morphogen-v2/tests/panels.test.mjs`, 9 new, 62 total); [STATUS.md](STATUS.md).
 - **2026-10-11 (09:20 ET)** — Morphogen v2 Canvas 2D renderer hardening: precomputed 256-step `PALETTE_LUT` (one lookup per pixel instead of three `Math.floor`s), NaN-safe `fieldTone` (bad cells render as background), bounded `fieldToRGBA` that never reads past short buffers, `safeDim` resize guard; first renderer tests (`morphogen-v2/tests/canvas2d.test.mjs`, 7 new, 53 total); [STATUS.md](STATUS.md).
 - **2026-10-10 (09:10 ET)** — Morphogen v2 Hum audio safety: NaN-safe `energyToDetune`, `modulate()` only schedules on a real detune change (no per-frame automation pile-up), mute remembered across unlock, anchored gain ramps capped at `HUM_LEVEL_ON`, `dispose()` disconnects every node incl. the compressor; first audio tests (`morphogen-v2/tests/hum.test.mjs`, 8 new, 46 total); [STATUS.md](STATUS.md).
