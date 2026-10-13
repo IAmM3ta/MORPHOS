@@ -81,7 +81,7 @@
       </header>
       <div id="stage">
         <canvas id="field" width="384" height="384" aria-label="Reaction-diffusion field"></canvas>
-        <div id="hud">click / drag to seed · Hum on ENTER</div>
+        <div id="hud">click / drag to seed · Hum on ENTER · m mute · l lock</div>
       </div>
       <div id="panels">
         <button type="button" data-panel="field">Field</button>
@@ -89,8 +89,8 @@
         <button type="button" data-panel="body">Body</button>
         <button type="button" data-panel="sound">Sound</button>
         <button type="button" data-panel="sync">Sync</button>
-        <button type="button" id="muteHum" aria-pressed="false">Hum on</button>
-        <button type="button" id="lockLoop">Lock loop</button>
+        <button type="button" id="muteHum" aria-pressed="false" aria-keyshortcuts="M" title="Mute Hum (M)">Hum on</button>
+        <button type="button" id="lockLoop" aria-keyshortcuts="L" title="Lock loop (L)">Lock loop</button>
         <button type="button" id="resetField">Reset</button>
         <span class="chip sync-chip" id="syncStatus" data-tone="idle" role="status" aria-live="polite">Sync off</span>
         <button type="button" id="syncRetry" hidden>Retry now</button>

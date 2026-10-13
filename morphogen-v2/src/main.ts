@@ -16,6 +16,7 @@ import {
   LOOP_MAX,
   type PanelId,
 } from './ui/panels';
+import { mountKeyboardShortcuts } from './ui/keys';
 
 const SIM_SIZE = 256;
 const STEPS = 2;
@@ -70,7 +71,7 @@ function main(): void {
       renderer.draw(sim);
       const st = sim.stats();
       hum.modulate(st.energy);
-      hud.textContent = `energy ${st.energy.toFixed(3)} · meanV ${st.meanV.toFixed(3)} · loops ${lockCount} · click/drag seed`;
+      hud.textContent = `energy ${st.energy.toFixed(3)} · meanV ${st.meanV.toFixed(3)} · loops ${lockCount} · click/drag seed · m mute · l lock`;
     }
     raf = requestAnimationFrame(frame);
   };
@@ -128,6 +129,15 @@ function main(): void {
   // Sound mute: label + aria-pressed mirror HumEngine; safe before ENTER.
   const toggleMute = mountMuteToggle(qs<HTMLElement>('#muteHum'), hum);
 
+  // One code path per action, shared by the panel buttons and the keyboard.
+  const muteToggle = () => {
+    setStatus(toggleMute() ? 'hum muted' : 'hum on');
+  };
+  const lockLoop = () => {
+    lockCount = nextLockCount(lockCount);
+    setStatus(lockCount >= LOOP_MAX ? `LOOP ${lockCount} (max)` : `LOOP ${lockCount}`);
+  };
+
   const unmountPanels = mountPanelStubs(panels, {
     onPanel: (id: PanelId) => {
       if (id === 'sync') {
@@ -139,13 +149,8 @@ function main(): void {
         setStatus(`panel ${id} (stub)`);
       }
     },
-    onLockLoop: () => {
-      lockCount = nextLockCount(lockCount);
-      setStatus(lockCount >= LOOP_MAX ? `LOOP ${lockCount} (max)` : `LOOP ${lockCount}`);
-    },
-    onMuteToggle: () => {
-      setStatus(toggleMute() ? 'hum muted' : 'hum on');
-    },
+    onLockLoop: lockLoop,
+    onMuteToggle: muteToggle,
     onReset: () => {
       if (resetNeedsConfirm(lockCount)) {
         const ok = confirm('Clear field and loops?');
@@ -155,6 +160,13 @@ function main(): void {
       sim.reset();
       setStatus('reset');
     },
+  });
+
+  // `m` mute / `l` lock loop; ignored while typing, on chords and on auto-repeat.
+  // Reset stays click-only.
+  const unmountKeys = mountKeyboardShortcuts(document, {
+    onMuteToggle: muteToggle,
+    onLockLoop: lockLoop,
   });
 
   // Expose nothing in prod; debug only
@@ -170,6 +182,7 @@ function main(): void {
   const teardown = () => {
     running = false;
     cancelAnimationFrame(raf);
+    unmountKeys();
     unmountPanels();
     td.disconnect();
     unmountSync();
