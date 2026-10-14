@@ -17,6 +17,7 @@ import {
   type PanelId,
 } from './ui/panels';
 import { mountKeyboardShortcuts } from './ui/keys';
+import { mountPointerSeeding } from './ui/pointer';
 
 const SIM_SIZE = 256;
 const STEPS = 2;
@@ -58,7 +59,6 @@ function main(): void {
   let lockCount = 0;
   let running = false;
   let raf = 0;
-  let painting = false;
 
   const setStatus = (s: string) => {
     status.textContent = s;
@@ -89,29 +89,15 @@ function main(): void {
     void start();
   });
 
-  const seedAt = (ev: PointerEvent) => {
-    const rect = canvas.getBoundingClientRect();
-    const nx = (ev.clientX - rect.left) / rect.width;
-    const ny = (ev.clientY - rect.top) / rect.height;
-    if (nx < 0 || ny < 0 || nx > 1 || ny > 1) return;
-    sim.seed(nx, ny, 0.045, 0.95);
-  };
-
-  canvas.addEventListener('pointerdown', (ev) => {
-    painting = true;
-    canvas.setPointerCapture(ev.pointerId);
-    seedAt(ev);
-    // also unlock if user skipped ENTER
-    if (!running) void start();
-  });
-  canvas.addEventListener('pointermove', (ev) => {
-    if (painting) seedAt(ev);
-  });
-  canvas.addEventListener('pointerup', () => {
-    painting = false;
-  });
-  canvas.addEventListener('pointercancel', () => {
-    painting = false;
+  // Click / drag seeding: one pointer at a time, primary button only, fast
+  // drags interpolated into a continuous stroke; a zero-size canvas or an
+  // off-canvas point never reaches sim.seed().
+  const unmountPointer = mountPointerSeeding(canvas, {
+    onPress: () => {
+      // also unlock if user skipped ENTER
+      if (!running) void start();
+    },
+    onSeed: ({ nx, ny }) => sim.seed(nx, ny, 0.045, 0.95),
   });
 
   document.addEventListener('visibilitychange', () => {
@@ -183,6 +169,7 @@ function main(): void {
     running = false;
     cancelAnimationFrame(raf);
     unmountKeys();
+    unmountPointer();
     unmountPanels();
     td.disconnect();
     unmountSync();

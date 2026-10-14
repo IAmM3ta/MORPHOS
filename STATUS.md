@@ -2,6 +2,21 @@
 
 RedBot daily cadence notes for `IAmM3ta/MORPHOS`. Newest first.
 
+## 2026-10-14 (09:12 ET — daily commit)
+
+**Landed:** Morphogen v2 pointer seeding — a guarded, testable click/drag path for seeding the field, plus its first tests.
+
+- `morphogen-v2/src/ui/pointer.ts` (new): pure `pointerToField(clientX, clientY, rect)` returns `{nx, ny}` in [0, 1] or null for a zero / negative-size rect, non-finite input or an off-canvas point. The old inline maths in `main.ts` divided by `rect.width`, so a collapsed canvas produced NaN, which slipped past the `< 0 || > 1` check into `sim.seed()`. Pure `strokePoints(prev, next)` fills fast drags with evenly spaced seeds (`STROKE_SPACING` 0.01 ≈ 2.5 cells at 256², capped at `STROKE_MAX_POINTS` = 24 per move because each seed is O(w·h)), so a quick swipe draws a line instead of dots. `isPaintButton` limits painting to the primary pointer's main button (no right-click, middle-click or second-finger painting). `mountPointerSeeding(surface, {onSeed, onPress})` follows exactly one pointer, ends the stroke on `pointerup` / `pointercancel` / `lostpointercapture`, restarts the stroke cleanly when the pointer leaves and re-enters the canvas, tolerates `setPointerCapture` throwing, and returns an unmount.
+- `morphogen-v2/src/main.ts`: the four inline pointer listeners and the `painting` flag are replaced by one `mountPointerSeeding(canvas, …)` call; seed radius / strength unchanged (0.045 / 0.95); the first press still unlocks the Hum if ENTER was skipped; teardown now unmounts the pointer listeners.
+- `morphogen-v2/tests/pointer.test.mjs`: 7 tests (coordinate mapping + bounds, zero-size / NaN rects, stroke spacing + endpoint, cap and bad-argument fallbacks, button / primary filter, mount dispatch with second-pointer and right-click ignored, off-canvas re-entry, lost capture). `npm test` bundles `pointer.ts`.
+- Checks: `npm test` 76/76, `tsc --noEmit` clean, `vite build` OK, `check:nowebgl` OK.
+
+**Verified:** the 2026-10-13 keyboard-shortcut commit (pushed through the GitHub API while the build box was offline, so not run at the time) passes on the box: 69/69 before today's tests, `tsc` and build clean.
+
+**Reviewed:** Panels, Hum, Canvas 2D renderer, Gray–Scott kernel and the Sync stack unchanged.
+
+**Next focus candidates:** Field-panel sliders / MIDI CC through `setParams`, move the kernel into a Worker, Sync path-picker UI, seed-brush size control.
+
 ## 2026-10-12 (09:35 ET — daily commit)
 
 **Landed:** Morphogen v2 panel input hygiene and the Sound-panel mute toggle, plus the panels' first routing tests.
