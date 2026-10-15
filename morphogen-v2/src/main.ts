@@ -18,9 +18,9 @@ import {
 } from './ui/panels';
 import { mountKeyboardShortcuts } from './ui/keys';
 import { mountPointerSeeding } from './ui/pointer';
+import { createFrameLoop, singleFlightUnlock } from './app/loop';
 
 const SIM_SIZE = 256;
-const STEPS = 2;
 
 function qs<T extends HTMLElement>(sel: string): T {
   const el = document.querySelector(sel);
@@ -57,32 +57,36 @@ function main(): void {
   }
   const syncSettings = loadSyncSettings(storage);
   let lockCount = 0;
-  let running = false;
-  let raf = 0;
 
   const setStatus = (s: string) => {
     status.textContent = s;
   };
 
-  const frame = () => {
-    if (!running) return;
-    if (!document.hidden) {
-      sim.stepN(STEPS, 1);
+  // Sim pacing is fixed at SIM_HZ (120 steps/s, the old 2-per-frame look at
+  // 60 Hz) whatever the display rate, capped at MAX_STEPS_PER_FRAME so a slow
+  // device or a tab return slows the field instead of bursting.
+  const loop = createFrameLoop({
+    requestFrame: (cb) => requestAnimationFrame(cb),
+    cancelFrame: (id) => cancelAnimationFrame(id),
+    onFrame: (steps) => {
+      if (document.hidden) return;
+      if (steps > 0) sim.stepN(steps, 1);
       renderer.draw(sim);
       const st = sim.stats();
       hum.modulate(st.energy);
       hud.textContent = `energy ${st.energy.toFixed(3)} · meanV ${st.meanV.toFixed(3)} · loops ${lockCount} · click/drag seed · m mute · l lock`;
-    }
-    raf = requestAnimationFrame(frame);
-  };
+    },
+  });
 
+  // ENTER and a first canvas press can land in the same gesture: they share
+  // one unlock attempt, and a rejecting AudioContext.resume() still starts the
+  // sim (silently) instead of leaving the gate up.
+  const unlockHum = singleFlightUnlock(() => hum.unlock());
   const start = async () => {
-    const ok = await hum.unlock();
+    const ok = await unlockHum();
     gate.classList.add('hidden');
-    running = true;
+    loop.start(); // idempotent
     setStatus(ok ? 'hum unlocked · sim' : 'sim (tap again if silent)');
-    cancelAnimationFrame(raf);
-    raf = requestAnimationFrame(frame);
   };
 
   enter.addEventListener('click', () => {
@@ -95,7 +99,7 @@ function main(): void {
   const unmountPointer = mountPointerSeeding(canvas, {
     onPress: () => {
       // also unlock if user skipped ENTER
-      if (!running) void start();
+      if (!loop.isRunning()) void start();
     },
     onSeed: ({ nx, ny }) => sim.seed(nx, ny, 0.045, 0.95),
   });
@@ -166,8 +170,7 @@ function main(): void {
   }
 
   const teardown = () => {
-    running = false;
-    cancelAnimationFrame(raf);
+    loop.stop();
     unmountKeys();
     unmountPointer();
     unmountPanels();

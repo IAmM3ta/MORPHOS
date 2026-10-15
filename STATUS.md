@@ -2,6 +2,19 @@
 
 RedBot daily cadence notes for `IAmM3ta/MORPHOS`. Newest first.
 
+## 2026-10-15 (09:20 ET — daily commit)
+
+**Landed:** Morphogen v2 frame loop — display-rate-independent sim pacing and a single-flight, failure-tolerant start, plus the loop's first tests.
+
+- `morphogen-v2/src/app/loop.ts` (new): pure `paceSteps(carryMs, elapsedMs)` is a fixed-timestep accumulator at `SIM_HZ` = 120 kernel steps/s (`SIM_STEP_MS` ≈ 8.33 ms), so 60 Hz still gets the old 2 steps per frame, 120 Hz gets 1 and 30 Hz gets 4 — the field evolves at the same speed on every display. Previously `main.ts` ran a fixed `STEPS = 2` per rAF, so a 120/144 Hz screen ran the sim 2–2.4× too fast. At most `MAX_STEPS_PER_FRAME` = 4 steps run per frame (each step is O(w·h), 65 536 cells at 256²); past that the backlog is dropped, so a tab return or debugger pause can't trigger a catch-up burst ("spiral of death"). Duplicate / backwards / non-finite timestamps run 0 steps and keep the carry; a corrupt carry resets to 0. `createFrameLoop({requestFrame, cancelFrame, onFrame})` keeps exactly one rAF chain (idempotent `start` / `stop`, stop-from-inside-a-frame honoured, clock reset on restart so stopped time is never replayed, a throwing frame still schedules the next one). `singleFlightUnlock(unlock)` shares one in-flight Hum unlock between ENTER and a first canvas press in the same gesture and resolves `false` (never rejects) when `AudioContext.resume()` throws — before, a rejection left the gate up and the sim frozen.
+- `morphogen-v2/src/main.ts`: `running` / `raf` / `STEPS` replaced by `createFrameLoop(...)` + `singleFlightUnlock(() => hum.unlock())`; the frame body (step, draw, modulate Hum, HUD) is unchanged apart from using the paced step count; the pointer `onPress` checks `loop.isRunning()`; teardown calls `loop.stop()`.
+- `morphogen-v2/tests/loop.test.mjs`: 7 tests (60 Hz = 2 steps and 1 s at 30/60/75/90/120/144/165/240 Hz ≈ 120 steps, cap + backlog drop incl. 20 Hz device, bad timestamps / corrupt carry / sub-step accumulation, fake-rAF loop pacing + idempotent start/stop, restart clock reset, stop-inside-frame + throwing frame, single-flight unlock sharing / rejection / sync throw / retry after settle). `npm test` bundles `app/loop.ts`.
+- Checks: `npm test` 83/83, `tsc --noEmit` clean, `vite build` OK, `check:nowebgl` OK.
+
+**Reviewed:** Pointer seeding (2026-10-14), keyboard shortcuts, panels, Hum, Canvas 2D renderer, Gray–Scott kernel and the Sync stack unchanged.
+
+**Next focus candidates:** Field-panel sliders / MIDI CC through `setParams`, move the kernel into a Worker (the loop's `onFrame` is the seam), Sync path-picker UI, seed-brush size control, NaN-safe HUD formatter.
+
 ## 2026-10-14 (09:12 ET — daily commit)
 
 **Landed:** Morphogen v2 pointer seeding — a guarded, testable click/drag path for seeding the field, plus its first tests.
