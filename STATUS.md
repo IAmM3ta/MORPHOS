@@ -2,6 +2,19 @@
 
 RedBot daily cadence notes for `IAmM3ta/MORPHOS`. Newest first.
 
+## 2026-10-16 (09:25 ET — daily commit)
+
+**Landed:** Morphogen v2 HUD — NaN-safe formatting and a throttled, change-only writer for the footer read-out, plus its first tests.
+
+- `morphogen-v2/src/ui/hud.ts` (new): pure `formatStat(value, digits = 3)` returns `—` (`HUD_MISSING`) for NaN / ±Infinity / non-numbers, clamps `digits` to an integer in [0, 6], and drops the sign when a value rounds to zero (`-0.0001` → `0.000`, so the HUD no longer flickers between `-0.000` and `0.000`). `formatLockCount` shows a non-negative integer (NaN / negative / non-numbers → 0). `formatHud(stats, lockCount)` builds the full line with `HUD_HINT` and tolerates a missing stats object. `createHudWriter(el, intervalMs = HUD_INTERVAL_MS)` writes at most once per 100 ms and only when the text differs from what's shown; `invalidate()` forces the next frame through; a backwards or non-finite rAF timestamp counts as "interval elapsed" so the HUD can't freeze on a bad clock.
+- `morphogen-v2/src/main.ts`: the inline `hud.textContent = …` template built from raw `st.energy.toFixed(3)` / `st.meanV.toFixed(3)` (rewritten every frame, 60–240×/s) is replaced by `hud.update(st, lockCount, now)` using the loop's rAF timestamp; Lock loop and Reset call `hud.invalidate()` so the new count appears on the next frame. The static pre-ENTER hint in `index.html` is untouched until the first frame.
+- `morphogen-v2/tests/hud.test.mjs`: 8 tests (fixed-point + bad values + negative-zero, digit clamp, lock-count clamp, full line + missing stats, ~10 writes per second at 240 Hz, unchanged text never rewritten, one-shot `invalidate`, backwards / NaN clocks and bad intervals). `npm test` bundles `ui/hud.ts`.
+- Checks: `npm test` 91/91, `tsc --noEmit` clean, `vite build` OK, `check:nowebgl` OK.
+
+**Reviewed:** Frame loop (2026-10-15), pointer seeding, keyboard shortcuts, panels, Hum, Canvas 2D renderer, Gray–Scott kernel and the Sync stack unchanged.
+
+**Next focus candidates:** Field-panel sliders / MIDI CC through `setParams`, move the kernel into a Worker (the loop's `onFrame` is the seam), Sync path-picker UI, seed-brush size control, compute `sim.stats()` only when the HUD or Hum needs it.
+
 ## 2026-10-15 (09:20 ET — daily commit)
 
 **Landed:** Morphogen v2 frame loop — display-rate-independent sim pacing and a single-flight, failure-tolerant start, plus the loop's first tests.

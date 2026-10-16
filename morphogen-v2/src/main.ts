@@ -18,6 +18,7 @@ import {
 } from './ui/panels';
 import { mountKeyboardShortcuts } from './ui/keys';
 import { mountPointerSeeding } from './ui/pointer';
+import { createHudWriter } from './ui/hud';
 import { createFrameLoop, singleFlightUnlock } from './app/loop';
 
 const SIM_SIZE = 256;
@@ -40,7 +41,10 @@ function main(): void {
   const gate = qs<HTMLElement>('#gate');
   const enter = qs<HTMLButtonElement>('#enter');
   const status = qs<HTMLElement>('#status');
-  const hud = qs<HTMLElement>('#hud');
+  // HUD line: NaN-safe numbers, written at most 10×/s and only on change
+  // (it was rewritten every frame, 60–240×/s). The static pre-ENTER hint in
+  // index.html stays until the first frame.
+  const hud = createHudWriter(qs<HTMLElement>('#hud'));
   const panels = qs<HTMLElement>('#panels');
 
   const sim = new GrayScott(SIM_SIZE, SIM_SIZE, PRESET_MITOSIS);
@@ -68,13 +72,13 @@ function main(): void {
   const loop = createFrameLoop({
     requestFrame: (cb) => requestAnimationFrame(cb),
     cancelFrame: (id) => cancelAnimationFrame(id),
-    onFrame: (steps) => {
+    onFrame: (steps, now) => {
       if (document.hidden) return;
       if (steps > 0) sim.stepN(steps, 1);
       renderer.draw(sim);
       const st = sim.stats();
       hum.modulate(st.energy);
-      hud.textContent = `energy ${st.energy.toFixed(3)} · meanV ${st.meanV.toFixed(3)} · loops ${lockCount} · click/drag seed · m mute · l lock`;
+      hud.update(st, lockCount, now);
     },
   });
 
@@ -125,6 +129,7 @@ function main(): void {
   };
   const lockLoop = () => {
     lockCount = nextLockCount(lockCount);
+    hud.invalidate(); // show the new loop count on the next frame
     setStatus(lockCount >= LOOP_MAX ? `LOOP ${lockCount} (max)` : `LOOP ${lockCount}`);
   };
 
@@ -148,6 +153,7 @@ function main(): void {
       }
       lockCount = 0;
       sim.reset();
+      hud.invalidate();
       setStatus('reset');
     },
   });

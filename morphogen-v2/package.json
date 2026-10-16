@@ -9,7 +9,7 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "check:nowebgl": "rg -n -i \"webgl|webgpu|getContext\\(['\\\"]webgl\" src && exit 1 || echo 'OK: no GPU canvas context APIs in src'",
-    "test": "esbuild tdClient=src/sync/tdClient.ts syncUrl=src/sync/syncUrl.ts panels=src/ui/panels.ts keys=src/ui/keys.ts pointer=src/ui/pointer.ts grayScott=src/sim/grayScott.ts hum=src/audio/hum.ts canvas2d=src/render/canvas2d.ts loop=src/app/loop.ts --bundle --format=esm --platform=neutral --outdir=.test-build --out-extension:.js=.mjs --log-level=warning && node --test tests/"
+    "test": "esbuild tdClient=src/sync/tdClient.ts syncUrl=src/sync/syncUrl.ts panels=src/ui/panels.ts keys=src/ui/keys.ts pointer=src/ui/pointer.ts hud=src/ui/hud.ts grayScott=src/sim/grayScott.ts hum=src/audio/hum.ts canvas2d=src/render/canvas2d.ts loop=src/app/loop.ts --bundle --format=esm --platform=neutral --outdir=.test-build --out-extension:.js=.mjs --log-level=warning && node --test tests/"
   },
   "devDependencies": {
     "esbuild": "^0.21.5",
