@@ -19,6 +19,7 @@ import {
 import { mountKeyboardShortcuts } from './ui/keys';
 import { mountPointerSeeding } from './ui/pointer';
 import { createHudWriter } from './ui/hud';
+import { createPresetCycler, describePreset, presetFromQuery } from './ui/field';
 import { createFrameLoop, singleFlightUnlock } from './app/loop';
 
 const SIM_SIZE = 256;
@@ -48,6 +49,14 @@ function main(): void {
   const panels = qs<HTMLElement>('#panels');
 
   const sim = new GrayScott(SIM_SIZE, SIM_SIZE, PRESET_MITOSIS);
+  // Field presets (Mitosis…Skate): the Field panel steps through them in a
+  // fixed order; `?preset=coral` picks the boot preset (unknown ids → Mitosis).
+  // Params go through sim.setParams, so sanitizeParams still guards them; the
+  // field itself is kept, so the pattern morphs into the new regime.
+  const field = createPresetCycler({
+    initial: presetFromQuery(location.search),
+    apply: (p) => sim.setParams(p),
+  });
   const renderer = new Canvas2DRenderer(canvas);
   const hum = new HumEngine();
   const td = new TdClient(''); // auth required before real connect
@@ -140,6 +149,8 @@ function main(): void {
           ? 'Sync: HTTPS → use companion http://127.0.0.1 (A), MIDI (B), or auth wss (C). Default ws:// blocked.'
           : 'Sync: companion ws://127.0.0.1:9980 OK on http; set auth token before connect.';
         setStatus(msg);
+      } else if (id === 'field') {
+        setStatus(describePreset(field.next()));
       } else {
         setStatus(`panel ${id} (stub)`);
       }
@@ -170,6 +181,7 @@ function main(): void {
     (window as unknown as { __morphogen?: unknown }).__morphogen = () => ({
       energy: sim.stats().energy,
       locks: lockCount,
+      preset: field.current(),
       td: td.snapshot(),
       sync: syncSettings,
     });

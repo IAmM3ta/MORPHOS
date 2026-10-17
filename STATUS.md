@@ -2,6 +2,20 @@
 
 RedBot daily cadence notes for `IAmM3ta/MORPHOS`. Newest first.
 
+## 2026-10-17 (09:20 ET — daily commit)
+
+**Landed:** Morphogen v2 Field presets — the Field panel button now cycles the 10 Gray–Scott presets instead of being a stub, plus its first tests.
+
+- `morphogen-v2/src/ui/field.ts` (new): `PRESET_ORDER` spells out the cycle order (Mitosis, Solitons, Pulsing, Holes, Mazes, Fingerprint, Spirals, Worms, Coral, Skate) so adding a kernel preset is a deliberate UI choice; `isPresetId` narrows untrusted strings with an own-property check (no `toString` / `__proto__`); `nextPresetId(current, dir)` wraps both ways and starts from the top for an unknown id; `presetParams(id)` strips the `name` label and runs the numbers through `sanitizeParams`, returning a fresh object (unknown → Mitosis); `describePreset` builds the status text (`Field: Coral (9/10) · feed 0.0545 · kill 0.0620`); `presetFromQuery` reads `?preset=` case-insensitively, trimmed, ignoring junk and values over 32 chars; `createPresetCycler({initial, apply})` applies the initial preset at construction and only moves its `current()` after `apply` succeeded, so the label can't claim a preset the kernel refused.
+- `morphogen-v2/src/main.ts`: builds the cycler with `apply: (p) => sim.setParams(p)` and the `?preset=` boot value; the Field panel click now calls `field.next()` and shows `describePreset(...)` instead of `panel field (stub)`; the field itself isn't cleared, so the current pattern morphs into the new regime; `?debug=1` snapshot includes `preset`.
+- `morphogen-v2/index.html`: Field button gets a `title` hint. `package.json`: `npm test` bundles `ui/field.ts`.
+- `morphogen-v2/tests/field.test.mjs`: 7 tests (order covers every kernel preset once, id narrowing incl. prototype keys, forward / back wrap and junk `dir`, exact table params within `PARAM_LIMITS`, status text, query parsing, cycler apply / ignore-junk / throwing-apply recovery).
+- Checks: `npm test` 98/98, `tsc --noEmit` clean, `vite build` OK, `check:nowebgl` OK.
+
+**Reviewed:** HUD (2026-10-16), frame loop, pointer seeding, keyboard shortcuts, panels, Hum, Canvas 2D renderer, Gray–Scott kernel and the Sync stack unchanged.
+
+**Next focus candidates:** a key or Shift-click to step presets backwards, Field-panel feed / kill sliders and the MIDI CC map through the same `setParams` path, Sync `preset` command from TD (`{cmd: "preset"}` in REBUILD-SPEC), move the kernel into a Worker, seed-brush size control, compute `sim.stats()` only when the HUD or Hum needs it.
+
 ## 2026-10-16 (09:25 ET — daily commit)
 
 **Landed:** Morphogen v2 HUD — NaN-safe formatting and a throttled, change-only writer for the footer read-out, plus its first tests.
