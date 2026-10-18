@@ -14,8 +14,8 @@ import {
 const body = { tagName: 'BODY' };
 const key = (k, extra = {}) => ({ key: k, target: body, ...extra });
 
-test('KEY_SHORTCUTS: m = mute, l = lock, frozen, no reset key', () => {
-  assert.deepEqual({ ...KEY_SHORTCUTS }, { m: 'mute', l: 'lock' });
+test('KEY_SHORTCUTS: m = mute, l = lock, ] / [ = preset next / prev, frozen, no reset key', () => {
+  assert.deepEqual({ ...KEY_SHORTCUTS }, { m: 'mute', l: 'lock', ']': 'presetNext', '[': 'presetPrev' });
   assert.ok(Object.isFrozen(KEY_SHORTCUTS));
   assert.equal(Object.values(KEY_SHORTCUTS).includes('reset'), false);
 });
@@ -121,4 +121,38 @@ test('mountKeyboardShortcuts: a missing handler leaves the key alone', () => {
   assert.equal(h.press('l').prevented, 0);
   assert.equal(h.press('m').prevented, 1);
   assert.deepEqual(calls, ['mute']);
+});
+
+// 2026-10-18: `]` / `[` step the Field preset forward / back.
+test('resolveKeyAction: ] / [ step presets; braces, chords and auto-repeat do not', () => {
+  assert.equal(resolveKeyAction(key(']')), 'presetNext');
+  assert.equal(resolveKeyAction(key('[')), 'presetPrev');
+  // Shift+[ types `{` on US layouts — not a shortcut.
+  for (const k of ['{', '}', '(', ')', '<', '>']) {
+    assert.equal(resolveKeyAction(key(k, { shiftKey: true })), null, k);
+  }
+  // AltGr layouts report Ctrl+Alt: rejected like every chord (Shift-click is the fallback).
+  assert.equal(resolveKeyAction(key('[', { ctrlKey: true, altKey: true })), null);
+  assert.equal(resolveKeyAction(key(']', { metaKey: true })), null);
+  // Holding the key moves exactly one preset.
+  assert.equal(resolveKeyAction(key(']', { repeat: true })), null);
+  assert.equal(resolveKeyAction(key('[', { target: { tagName: 'INPUT', type: 'text' } })), null);
+});
+
+test('mountKeyboardShortcuts: preset keys dispatch only when wired', () => {
+  const h = host();
+  const calls = [];
+  const unmount = mountKeyboardShortcuts(h, {
+    onPresetNext: () => calls.push('next'),
+    onPresetPrev: () => calls.push('prev'),
+  });
+  assert.equal(h.press(']').prevented, 1);
+  assert.equal(h.press('[').prevented, 1);
+  assert.equal(h.press(']', { repeat: true }).prevented, 0);
+  assert.equal(h.press('m').prevented, 0, 'mute not wired here, so M keeps browser behaviour');
+  assert.deepEqual(calls, ['next', 'prev']);
+  unmount();
+  const bare = host();
+  mountKeyboardShortcuts(bare, { onMuteToggle: () => {} });
+  assert.equal(bare.press(']').prevented, 0, 'unwired preset key is left alone');
 });

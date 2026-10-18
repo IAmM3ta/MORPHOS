@@ -1,7 +1,16 @@
 /**
  * Keyboard shortcuts for performers (2026-10-13): `m` toggles the Hum mute and
  * `l` locks a loop, the same actions as the `#muteHum` / `#lockLoop` buttons.
+ * 2026-10-18: `]` steps the Field to the next Gray–Scott preset and `[` steps
+ * back, the same path as clicking / Shift-clicking the Field panel button.
  * Reset is deliberately click-only (it can clear locked work).
+ *
+ * Bracket caveat: `[` / `]` are matched on `KeyboardEvent.key`, so they work
+ * wherever the layout types them without a modifier (US / UK / most Latin
+ * layouts). On layouts that need AltGr (German, Nordic…) the browser reports
+ * Ctrl+Alt, which the chord guard below rejects on purpose; the Shift-click
+ * on the Field button is the fallback there. Auto-repeat is ignored, so
+ * holding `]` moves exactly one preset instead of spinning through all ten.
  *
  * Everything that decides whether a key press counts is pure so
  * tests/keys.test.mjs can cover it without a DOM. A shortcut never fires while
@@ -11,12 +20,14 @@
  * composition, or when another handler already called preventDefault().
  */
 
-export type KeyAction = 'mute' | 'lock';
+export type KeyAction = 'mute' | 'lock' | 'presetNext' | 'presetPrev';
 
 /** Single-key shortcuts, keyed by lower-cased `KeyboardEvent.key` (so Shift / Caps Lock still work). */
 export const KEY_SHORTCUTS: Readonly<Record<string, KeyAction>> = Object.freeze({
   m: 'mute',
   l: 'lock',
+  ']': 'presetNext',
+  '[': 'presetPrev',
 });
 
 /** Minimal shape of a key event target (real elements satisfy it; tests pass plain objects). */
@@ -83,7 +94,27 @@ export function resolveKeyAction(ev: KeyEventLike | null | undefined): KeyAction
 export type KeyHandlers = {
   onMuteToggle?: () => void;
   onLockLoop?: () => void;
+  /** `]`: next Field preset (wraps Skate → Mitosis). */
+  onPresetNext?: () => void;
+  /** `[`: previous Field preset (wraps Mitosis → Skate). */
+  onPresetPrev?: () => void;
 };
+
+/** Handler for an action, or undefined when the caller didn't wire one (the key then keeps its browser behaviour). */
+function handlerFor(action: KeyAction | null, h: KeyHandlers): (() => void) | undefined {
+  switch (action) {
+    case 'mute':
+      return h.onMuteToggle;
+    case 'lock':
+      return h.onLockLoop;
+    case 'presetNext':
+      return h.onPresetNext;
+    case 'presetPrev':
+      return h.onPresetPrev;
+    default:
+      return undefined;
+  }
+}
 
 /** Anything that can carry a keydown listener (document, window, or a test stub). */
 export type KeyListenerHost = {
@@ -99,8 +130,7 @@ export type KeyListenerHost = {
 export function mountKeyboardShortcuts(host: KeyListenerHost, handlers: KeyHandlers): () => void {
   const onKey = (ev: Event) => {
     const ke = ev as unknown as KeyEventLike & { preventDefault?: () => void };
-    const action = resolveKeyAction(ke);
-    const fn = action === 'mute' ? handlers.onMuteToggle : action === 'lock' ? handlers.onLockLoop : undefined;
+    const fn = handlerFor(resolveKeyAction(ke), handlers);
     if (!fn) return;
     ke.preventDefault?.();
     fn();

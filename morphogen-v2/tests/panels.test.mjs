@@ -101,7 +101,7 @@ test('mountPanelStubs: dispatches each action, writes the note, unmount removes 
   };
   const calls = [];
   const unmount = mountPanelStubs(root, {
-    onPanel: (id) => calls.push(`panel:${id}`),
+    onPanel: (id, c) => calls.push(`panel:${id}${c.shiftKey ? '+shift' : ''}`),
     onLockLoop: () => calls.push('lock'),
     onReset: () => calls.push('reset'),
     onMuteToggle: () => calls.push('mute'),
@@ -113,7 +113,10 @@ test('mountPanelStubs: dispatches each action, writes the note, unmount removes 
   click(el({ id: 'muteHum' }));
   click(el({ attrs: { 'data-panel': 'bogus' } }));
   click(null);
-  assert.deepEqual(calls, ['panel:field', 'lock', 'reset', 'mute']);
+  // 2026-10-18: Shift state is forwarded; only a literal true counts.
+  listeners.get('click')({ target: el({ attrs: { 'data-panel': 'field' } }), shiftKey: true });
+  listeners.get('click')({ target: el({ attrs: { 'data-panel': 'field' } }), shiftKey: 'yes' });
+  assert.deepEqual(calls, ['panel:field', 'lock', 'reset', 'mute', 'panel:field+shift', 'panel:field']);
   assert.equal(note.textContent, 'panel: Field (stub)');
   unmount();
   assert.equal(listeners.has('click'), false);

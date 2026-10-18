@@ -19,7 +19,7 @@ import {
 import { mountKeyboardShortcuts } from './ui/keys';
 import { mountPointerSeeding } from './ui/pointer';
 import { createHudWriter } from './ui/hud';
-import { createPresetCycler, describePreset, presetFromQuery } from './ui/field';
+import { createPresetCycler, describePreset, presetFromQuery, presetStepDir } from './ui/field';
 import { createFrameLoop, singleFlightUnlock } from './app/loop';
 
 const SIM_SIZE = 256;
@@ -136,6 +136,11 @@ function main(): void {
   const muteToggle = () => {
     setStatus(toggleMute() ? 'hum muted' : 'hum on');
   };
+  // Field preset step: +1 next / -1 previous. Shared by the Field button
+  // (click / Shift-click) and the `]` / `[` keys so the status text is identical.
+  const stepPreset = (dir: 1 | -1) => {
+    setStatus(describePreset(field.next(dir)));
+  };
   const lockLoop = () => {
     lockCount = nextLockCount(lockCount);
     hud.invalidate(); // show the new loop count on the next frame
@@ -143,14 +148,14 @@ function main(): void {
   };
 
   const unmountPanels = mountPanelStubs(panels, {
-    onPanel: (id: PanelId) => {
+    onPanel: (id: PanelId, click) => {
       if (id === 'sync') {
         const msg = isSecurePage()
           ? 'Sync: HTTPS → use companion http://127.0.0.1 (A), MIDI (B), or auth wss (C). Default ws:// blocked.'
           : 'Sync: companion ws://127.0.0.1:9980 OK on http; set auth token before connect.';
         setStatus(msg);
       } else if (id === 'field') {
-        setStatus(describePreset(field.next()));
+        stepPreset(presetStepDir(click));
       } else {
         setStatus(`panel ${id} (stub)`);
       }
@@ -169,11 +174,13 @@ function main(): void {
     },
   });
 
-  // `m` mute / `l` lock loop; ignored while typing, on chords and on auto-repeat.
-  // Reset stays click-only.
+  // `m` mute / `l` lock loop / `]` next preset / `[` previous preset; ignored
+  // while typing, on chords and on auto-repeat. Reset stays click-only.
   const unmountKeys = mountKeyboardShortcuts(document, {
     onMuteToggle: muteToggle,
     onLockLoop: lockLoop,
+    onPresetNext: () => stepPreset(1),
+    onPresetPrev: () => stepPreset(-1),
   });
 
   // Expose nothing in prod; debug only

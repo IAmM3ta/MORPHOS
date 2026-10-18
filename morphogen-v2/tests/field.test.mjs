@@ -13,6 +13,7 @@ import {
   describePreset,
   presetFromQuery,
   createPresetCycler,
+  presetStepDir,
 } from '../.test-build/field.mjs';
 import { PRESETS, PARAM_LIMITS } from '../.test-build/grayScott.mjs';
 
@@ -105,4 +106,23 @@ test('createPresetCycler: applies initial, cycles, ignores junk set, survives a 
   assert.equal(e.set('coral'), 'mitosis');
   fail = false;
   assert.equal(e.next(), 'solitons', 'recovers once apply works again');
+});
+
+// 2026-10-18: Shift-click on the Field button steps back.
+test('presetStepDir: only a literal shiftKey === true steps back', () => {
+  assert.equal(presetStepDir({ shiftKey: true }), -1);
+  for (const ev of [{ shiftKey: false }, { shiftKey: 'true' }, { shiftKey: 1 }, {}, null, undefined]) {
+    assert.equal(presetStepDir(ev), 1, JSON.stringify(ev));
+  }
+});
+
+test('cycler: back-stepping from Mitosis wraps to Skate and a full lap returns home', () => {
+  const applied = [];
+  const c = createPresetCycler({ apply: (_p, id) => applied.push(id) });
+  assert.equal(c.next(presetStepDir({ shiftKey: true })), 'uskate');
+  assert.equal(c.next(presetStepDir({ shiftKey: false })), 'mitosis');
+  for (let i = 0; i < PRESET_ORDER.length; i++) c.next(-1);
+  assert.equal(c.current(), 'mitosis', 'ten back-steps is one full lap');
+  assert.deepEqual(applied.slice(0, 3), ['mitosis', 'uskate', 'mitosis']);
+  assert.equal(applied.length, 2 + 1 + PRESET_ORDER.length);
 });

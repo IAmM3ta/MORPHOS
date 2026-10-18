@@ -89,6 +89,16 @@ export function presetFromQuery(search: string): PresetId | null {
   return isPresetId(id) ? id : null;
 }
 
+/**
+ * Direction for a Field panel click (2026-10-18): Shift-click steps back one
+ * preset, a plain click steps forward. Only a literal `shiftKey === true`
+ * counts, so a missing / junk event (keyboard-activated button, test stub)
+ * always moves forward like before.
+ */
+export function presetStepDir(ev: { shiftKey?: unknown } | null | undefined): 1 | -1 {
+  return ev && ev.shiftKey === true ? -1 : 1;
+}
+
 export type PresetCycler = {
   /** Preset currently applied to the kernel. */
   current(): PresetId;

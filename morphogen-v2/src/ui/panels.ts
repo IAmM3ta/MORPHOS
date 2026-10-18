@@ -15,8 +15,15 @@ export const PANEL_LABELS: Record<PanelId, string> = {
   sync: 'Sync',
 };
 
+/** Modifier state forwarded with a panel click; `shiftKey` is false unless the event literally said true. */
+export type PanelClick = { shiftKey: boolean };
+
 export type PanelHandlers = {
-  onPanel?: (id: PanelId) => void;
+  /**
+   * `click` carries the modifier state the Field panel needs (Shift-click =
+   * previous preset, 2026-10-18). Other panels ignore it.
+   */
+  onPanel?: (id: PanelId, click: PanelClick) => void;
   onLockLoop?: () => void;
   onReset?: () => void;
   onMuteToggle?: () => void;
@@ -89,7 +96,7 @@ export function mountPanelStubs(root: HTMLElement, handlers: PanelHandlers): () 
     if (!action) return;
     switch (action.kind) {
       case 'panel':
-        handlers.onPanel?.(action.id);
+        handlers.onPanel?.(action.id, { shiftKey: (ev as MouseEvent).shiftKey === true });
         if (note) note.textContent = `panel: ${PANEL_LABELS[action.id]} (stub)`;
         break;
       case 'lock':

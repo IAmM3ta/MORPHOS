@@ -2,6 +2,21 @@
 
 RedBot daily cadence notes for `IAmM3ta/MORPHOS`. Newest first.
 
+## 2026-10-18 (09:09 ET — daily commit)
+
+**Landed:** Morphogen v2 preset back-stepping — Shift-click on Field and `[` / `]` keys step the 10 Gray–Scott presets in both directions.
+
+- `morphogen-v2/src/ui/field.ts`: new pure `presetStepDir(ev)` returns -1 only when `ev.shiftKey === true`, otherwise +1, so a keyboard-activated button, a missing event or a junk value still steps forward as before. The cycler already accepted `next(-1)`; nothing in the UI reached it until now.
+- `morphogen-v2/src/ui/panels.ts`: `onPanel(id, click)` now receives `{ shiftKey }` (new `PanelClick` type; literal `true` only). Other panels ignore it.
+- `morphogen-v2/src/ui/keys.ts`: `KEY_SHORTCUTS` adds `]` = `presetNext` and `[` = `presetPrev`; handler lookup moved into a small `handlerFor` switch so an unwired action leaves the key's browser behaviour alone. Header comment documents the AltGr caveat (German / Nordic layouts send Ctrl+Alt for brackets and the chord guard rejects it on purpose; Shift-click is the fallback) and that auto-repeat moves exactly one preset.
+- `morphogen-v2/src/main.ts`: one `stepPreset(dir)` path shared by the Field button and both keys. `index.html`: Field button gets `aria-keyshortcuts="] ["` and a title naming Shift-click.
+- Tests: `keys.test.mjs` +2 (bracket mapping, braces / AltGr chord / repeat / text-field rejected, dispatch only when wired), `panels.test.mjs` Shift state forwarded with literal-true check, `field.test.mjs` +2 (`presetStepDir` truth table, back-wrap Mitosis → Skate and a full ten-step lap).
+- Checks: `npm test` 102/102, `tsc --noEmit` clean, `vite build` OK, `check:nowebgl` OK.
+
+**Reviewed:** Field presets (2026-10-17), HUD, frame loop, pointer seeding, panels, Hum, Canvas 2D renderer, Gray–Scott kernel and the Sync stack unchanged.
+
+**Next focus candidates:** Field-panel feed / kill sliders and the MIDI CC map through the same `setParams` path, Sync `preset` command from TD (`{cmd: "preset"}` in REBUILD-SPEC) via `field.set`, move the kernel into a Worker, seed-brush size control, compute `sim.stats()` only when the HUD or Hum needs it.
+
 ## 2026-10-17 (09:20 ET — daily commit)
 
 **Landed:** Morphogen v2 Field presets — the Field panel button now cycles the 10 Gray–Scott presets instead of being a stub, plus its first tests.
