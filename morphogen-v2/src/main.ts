@@ -141,6 +141,15 @@ function main(): void {
   const stepPreset = (dir: 1 | -1) => {
     setStatus(describePreset(field.next(dir)));
   };
+  // TD → app commands (authed sessions only; parsed + rate-limited in
+  // sync/tdCommand.ts). `preset` goes through the same cycler as the Field
+  // button, so an unknown id from TD is a no-op and the label stays honest.
+  td.onCommand = (cmd) => {
+    if (cmd.cmd !== 'preset') return;
+    const before = field.current();
+    const now = field.set(cmd.id);
+    if (now !== before) setStatus(`${describePreset(now)} · from TD`);
+  };
   const lockLoop = () => {
     lockCount = nextLockCount(lockCount);
     hud.invalidate(); // show the new loop count on the next frame

@@ -27,6 +27,9 @@
  */
 
 import { sanitizeTdUrl, type TdHostClass } from './syncUrl';
+import { parseTdCommand, pongFor, createCommandGate, type TdCommand } from './tdCommand';
+
+export type { TdCommand } from './tdCommand';
 
 export type SyncPath = 'companion' | 'midi' | 'wss';
 
@@ -271,6 +274,8 @@ export type TdClientOptions = {
   maxReconnectAttempts?: number;
   /** Jitter source in [0, 1); injectable for tests (default Math.random). */
   rand?: () => number;
+  /** Clock for the TD command rate gate, epoch ms (default Date.now). */
+  now?: () => number;
 };
 
 type ConnectTarget = { url: string; path: SyncPath; getPayload: () => TdTelemetry };
@@ -297,12 +302,23 @@ export class TdClient {
   /** Epoch ms of the scheduled retry while status === 'reconnecting', else null. */
   nextRetryAt: number | null = null;
   onStatus?: (s: TdStatus, err?: string | null) => void;
+  /**
+   * TD → app commands (2026-10-21, see ./tdCommand.ts). Only called while
+   * status === 'open' (after the authed ack), after parsing and rate-limiting.
+   * `ping` is answered inside the client and never reaches this callback.
+   */
+  onCommand?: (cmd: TdCommand) => void;
+  /** Rate limit for TD commands; refilled on every fresh authed session. */
+  private readonly commandGate = createCommandGate();
+  /** Clock for the command gate (injectable via TdClientOptions.now for tests). */
+  private readonly now: () => number;
 
   constructor(authToken = '', opts: TdClientOptions = {}) {
     this.authToken = authToken;
     this.autoReconnect = opts.autoReconnect ?? true;
     this.maxReconnectAttempts = Math.max(0, opts.maxReconnectAttempts ?? RECONNECT_MAX_ATTEMPTS);
     this.rand = opts.rand ?? Math.random;
+    this.now = opts.now ?? Date.now;
   }
 
   setAuth(token: string): void {
@@ -395,10 +411,11 @@ export class TdClient {
     };
     ws.onmessage = (ev: MessageEvent) => {
       if (this.ws !== ws) return;
-      if (this.status !== 'authenticating') {
-        // Reserved for the optional TD→app control plane ({ v, cmd, ... }).
+      if (this.status === 'open') {
+        this.handleCommand(ws, ev.data);
         return;
       }
+      if (this.status !== 'authenticating') return;
       const ack = parseHelloAck(ev.data);
       if (!ack) return; // ignore noise until a real ack or the timeout
       this.clearAckTimer();
@@ -409,6 +426,7 @@ export class TdClient {
       this.status = 'open';
       this.lastError = null;
       this.reconnectAttempt = 0; // healthy again: next drop starts from the base delay
+      this.commandGate.reset(); // fresh session, fresh command budget
       this.onStatus?.(this.status, null);
       this.timer = setInterval(() => {
         if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
@@ -416,6 +434,25 @@ export class TdClient {
         this.ws.send(JSON.stringify(target.getPayload()));
       }, 50);
     };
+  }
+
+  /**
+   * One TD → app frame on an authed socket. Junk and over-rate frames are
+   * dropped silently (no status change: a chatty or newer TD must not kill the
+   * session). A throwing onCommand handler is contained here for the same reason.
+   */
+  private handleCommand(ws: WebSocket, data: unknown): void {
+    const cmd = parseTdCommand(data);
+    if (!cmd || !this.commandGate.allow(this.now())) return;
+    if (cmd.cmd === 'ping') {
+      if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(pongFor(cmd)));
+      return;
+    }
+    try {
+      this.onCommand?.(cmd);
+    } catch {
+      // handler bugs stay local; telemetry keeps flowing
+    }
   }
 
   /** Transient failure: retry with backoff, or give up once the budget is spent. */

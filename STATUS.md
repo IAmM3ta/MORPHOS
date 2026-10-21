@@ -2,6 +2,22 @@
 
 RedBot daily cadence notes for `IAmM3ta/MORPHOS`. Newest first.
 
+## 2026-10-21 (09:10 ET — daily commit)
+
+**Landed:** Morphogen v2 TD → app control plane — TouchDesigner can now switch the Field preset and ping the browser over the authed Sync socket.
+
+- `morphogen-v2/src/sync/tdCommand.ts` (new, pure): `parseTdCommand(raw)` accepts `{v:1, cmd:"preset", id}` (id trimmed + lower-cased like `?preset=`, `[a-z0-9_-]`, ≤ 32 chars) and `{v:1, cmd:"ping", t}` (non-finite `t` → null); refuses `setParams`, `freeze`, unknown commands, wrong `v`, arrays and frames over `MAX_COMMAND_BYTES` = 512. `pongFor` builds `{v:1, pong:"morphogen", t}`. `createCommandGate(rate = 10/s, burst = 5)` is a token bucket; NaN / Infinity / backwards clocks refill nothing, bad constructor args fall back to defaults instead of disabling the gate.
+- `morphogen-v2/src/sync/tdClient.ts`: `onmessage` now routes frames to `handleCommand` only while `status === 'open'` (after TD's ok ack); pre-ack frames still only go to the ack parser. Pings are answered in-client; other commands go to the new `onCommand` callback inside a try/catch so a handler bug can't kill telemetry. The gate is refilled on every fresh authed session; `TdClientOptions.now` injects its clock for tests.
+- `morphogen-v2/src/main.ts`: `td.onCommand` sends `preset` through `field.set(id)` (unknown ids are ignored by the cycler) and shows `Field: … · from TD` only when the preset actually changed.
+- Tests: `tdCommand.test.mjs` 6 (accept / normalise, junk ids, ping echo, refused frames, burst + rate, bad clocks + reset), `tdClient.test.mjs` +2 (no dispatch before ack, reserved dropped, pong sent; 50-frame flood → 5 dispatched, throwing handler leaves session open and telemetry pumping).
+- Checks: `npm test` 110/110, `tsc --noEmit` clean, `vite build` OK, `check:nowebgl` OK.
+
+**Missed days:** the scheduled 2026-10-19 and 2026-10-20 runs did not push a commit (the 10-20 run was recorded as failed); this commit resumes the cadence.
+
+**Reviewed:** preset back-stepping (2026-10-18), Field presets, HUD, frame loop, pointer seeding, keys, panels, Hum, Canvas 2D renderer, Gray–Scott kernel, Sync URL hygiene unchanged.
+
+**Next focus candidates:** TD-side helper in `td/morphogen_sync_callbacks.py` to send `preset` / `ping` and log round-trip time, `setParams` with a limits review against `PARAM_LIMITS`, Field-panel feed / kill sliders and the MIDI CC map through the same `setParams` path, move the kernel into a Worker, seed-brush size control.
+
 ## 2026-10-18 (09:09 ET — daily commit)
 
 **Landed:** Morphogen v2 preset back-stepping — Shift-click on Field and `[` / `]` keys step the 10 Gray–Scott presets in both directions.

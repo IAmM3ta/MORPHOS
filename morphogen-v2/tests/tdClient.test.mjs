@@ -204,3 +204,43 @@ test('bad token never opens a socket', () => {
   assert.equal(td.status, 'error');
   assert.equal(FakeWS.instances.length, 0);
 });
+
+// --- TD → app control plane (2026-10-21) ---
+
+test('commands: only dispatched after the authed ack; ping answered in-client', () => {
+  const got = [];
+  const td = new TdClient(SECRET, { rand: () => 0, now: () => 0 });
+  td.onCommand = (c) => got.push(c);
+  td.connect(URL_OK, 'companion', payload);
+  const ws = last();
+  ws.serverOpen();
+  ws.serverSend({ v: 1, cmd: 'preset', id: 'coral' }); // before ack: ignored
+  assert.equal(got.length, 0);
+  ws.serverSend(ackOk);
+  ws.serverSend({ v: 1, cmd: 'preset', id: 'Coral' });
+  ws.serverSend({ v: 1, cmd: 'setParams', feed: 1 }); // reserved: dropped
+  ws.serverSend({ v: 1, cmd: 'ping', t: 42 });
+  assert.deepEqual(got, [{ cmd: 'preset', id: 'coral' }]);
+  assert.deepEqual(ws.sent.at(-1), { v: 1, pong: 'morphogen', t: 42 });
+  assert.equal(td.status, 'open');
+  td.disconnect();
+});
+
+test('commands: rate-limited, and a throwing handler does not break the session', () => {
+  let n = 0;
+  const td = new TdClient(SECRET, { rand: () => 0, now: () => 0 });
+  td.onCommand = () => {
+    n++;
+    throw new Error('handler bug');
+  };
+  td.connect(URL_OK, 'companion', payload);
+  const ws = last();
+  ws.serverOpen();
+  ws.serverSend(ackOk);
+  for (let i = 0; i < 50; i++) ws.serverSend({ v: 1, cmd: 'preset', id: 'worms' });
+  assert.equal(n, 5); // COMMAND_BURST at a frozen clock
+  assert.equal(td.status, 'open');
+  mock.timers.tick(100);
+  assert.ok(ws.sent.length > 1, 'telemetry still pumping');
+  td.disconnect();
+});
