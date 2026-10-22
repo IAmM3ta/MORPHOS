@@ -2,6 +2,19 @@
 
 RedBot daily cadence notes for `IAmM3ta/MORPHOS`. Newest first.
 
+## 2026-10-22 (09:30 ET — daily commit)
+
+**Landed:** Morphogen v2 TD-side command helper — TouchDesigner can now actually send the `preset` / `ping` commands the browser learned on 2026-10-21, and measure round-trip time.
+
+- `morphogen-v2/td/morphogen_sync_commands.py` (new, pure Python, no TD imports): `normalize_preset_id` / `make_preset_command` (strip + lower, `[a-z0-9_-]`, ≤ 32 chars, must be in `PRESET_IDS` unless `allow_unknown=True`), `make_ping_command` (finite `t` only), compact JSON with a hard `MAX_COMMAND_BYTES` = 512 check. `CommandPacer` is the browser's token bucket (10/s, burst 5; NaN / backwards clocks refill nothing; bad args fall back to defaults). `RttTracker` stamps pings, matches pongs only against outstanding `t` values it sent (duplicates, forged or `True` values ignored), keeps a 16-sample window with `last_ms` / `median_ms`. `classify_inbound` sorts authed frames into pong / telemetry / other.
+- `morphogen-v2/td/morphogen_sync_callbacks.py`: **bug fix** — a pong was handed to the telemetry path, which cleared `morphogen_table` and wrote nothing, blanking it until the next telemetry frame. Pongs now go to the RTT tracker (optional `morphogen_rtt` Table DAT), unknown authed frames are ignored, and only telemetry touches the tables. New `send_preset(dat, id)` / `send_ping(dat)` broadcast to authed clients only through the pacer; the pacer refills on each fresh authed hello, as the browser's gate does.
+- `morphogen-v2/td/morphogen_sync_auth.py`: `SyncAuthGate.authed_clients()` so the callbacks never send a command to an un-acked socket.
+- Tests: new `tests/test_td_sync_commands.py` (9): preset list and byte cap checked against `field.ts` / `tdCommand.ts` so the two sides can't drift, id validation, ping `t` validation, inbound classification, pacer burst / refill / bad clocks, RTT matching, and fake-TD callback tests (commands reach only the authed client, 6th burst frame paced out, pong updates RTT without touching telemetry). `pytest tests/test_td_sync_auth.py tests/test_td_sync_commands.py` 37 passed.
+
+**Reviewed:** browser-side TD command plane (2026-10-21), preset stepping, Field presets, HUD, loop, pointer, keys, panels, Hum, renderer, kernel unchanged; no TypeScript touched this pass.
+
+**Next focus candidates:** `setParams` with a limits review against `PARAM_LIMITS`, Field-panel feed / kill sliders and the MIDI CC map through the same path, show TD RTT in the browser Sync panel, move the kernel into a Worker, seed-brush size control.
+
 ## 2026-10-21 (09:10 ET — daily commit)
 
 **Landed:** Morphogen v2 TD → app control plane — TouchDesigner can now switch the Field preset and ping the browser over the authed Sync socket.

@@ -95,6 +95,10 @@ class SyncAuthGate:
         st = self._clients.get(client)
         return bool(st and st.authed)
 
+    def authed_clients(self) -> list:
+        """Client ids that completed the hello (targets for TD -> app commands)."""
+        return [c for c, st in self._clients.items() if st.authed]
+
     @property
     def authed_count(self) -> int:
         return sum(1 for st in self._clients.values() if st.authed)

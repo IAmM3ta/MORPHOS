@@ -29,7 +29,8 @@ First-principles rebuild of the Morphogen live AV instrument.
 `td/` holds the TD half of the C2 fix:
 
 - `td/morphogen_sync_auth.py` — pure-Python `SyncAuthGate` (no TD imports): first frame must be a valid hello, constant-time secret compare, ±30 s timestamp window, 64 KB frame cap, drop after 3 bad hellos, per-client state cleared on disconnect. Tests: `pytest tests/test_td_sync_auth.py` from the repo root.
-- `td/morphogen_sync_callbacks.py` — WebSocket DAT callbacks that route every frame through the gate and only then write `morphogen_table` / `morphogen_grid`. Set the secret as a custom string par `Syncsecret` on the parent COMP; an unset or short secret fails closed (all clients refused).
+- `td/morphogen_sync_callbacks.py` — WebSocket DAT callbacks that route every frame through the gate and only then write `morphogen_table` / `morphogen_grid`. Set the secret as a custom string par `Syncsecret` on the parent COMP; an unset or short secret fails closed (all clients refused). Since 2026-10-22 it also exposes `send_preset(dat, id)` / `send_ping(dat)` for TD → app cues and routes returning pongs to an optional `morphogen_rtt` Table DAT (`last_ms`, `median_ms`, `samples`) instead of the telemetry table.
+- `td/morphogen_sync_commands.py` — pure-Python twin of `src/sync/tdCommand.ts`: `make_preset_command` / `make_ping_command` (same id normalisation and 512-byte cap as the browser), `PRESET_IDS` (test-checked against `PRESET_ORDER`), `CommandPacer` (same 10/s, burst-5 token bucket so TD never sends frames the browser would drop), `RttTracker` (only pongs echoing a ping this TD sent count), `classify_inbound`. Tests: `pytest tests/test_td_sync_commands.py`.
 
 Browser side: `td.setAuth('<same secret>')` before `connect()`.
 
