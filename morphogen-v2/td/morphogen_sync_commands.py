@@ -26,6 +26,11 @@ Rules mirror the browser so TD never sends a frame the app would silently drop:
     silently discarded at the other end.
 
 Tested without TouchDesigner in tests/test_td_sync_commands.py.
+
+Contract (2026-10-23): morphogen-v2/tests/fixtures/td-commands.v1.json pins the
+exact frame bytes, refusals and pacer verdicts this module and the browser must
+agree on. Change the fixture first if a rule changes, then keep both
+tests/test_td_sync_contract.py and morphogen-v2/tests/tdContract.test.mjs green.
 """
 
 from __future__ import annotations

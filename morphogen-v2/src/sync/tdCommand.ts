@@ -23,6 +23,12 @@
  * input — size-capped, shape-checked, strings normalised and length-limited,
  * and rate-limited by createCommandGate so a runaway TD script can't thrash
  * the kernel 1000×/s.
+ *
+ * Contract (2026-10-23): td/morphogen_sync_commands.py is the TD-side twin of
+ * this file. tests/fixtures/td-commands.v1.json pins the exact frames, refusals
+ * and rate-gate verdicts both sides must agree on; if you change a rule here,
+ * update that fixture and keep tests/tdContract.test.mjs and
+ * ../tests/test_td_sync_contract.py passing.
  */
 
 /** Frames bigger than this are dropped before JSON.parse (commands are tiny). */

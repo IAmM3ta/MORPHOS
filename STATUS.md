@@ -2,6 +2,20 @@
 
 RedBot daily cadence notes for `IAmM3ta/MORPHOS`. Newest first.
 
+## 2026-10-23 (09:20 ET — daily commit)
+
+**Landed:** a shared TD ↔ browser contract fixture, so the two hand-written halves of the Sync command plane can't drift apart unnoticed.
+
+- `morphogen-v2/tests/fixtures/td-commands.v1.json` (new): six TD-built frames with their exact bytes and parsed result (known, padded / upper-case, `allow_unknown`, int and float ping `t`), seven builder rejects, seven browser refusals (`setParams`, `freeze`, wrong `v`, missing `v`, bad id, array, non-JSON), the pong reply, and a 19-step clock script for the 10/s burst-5 bucket.
+- `morphogen-v2/tests/tdContract.test.mjs` (new, 5 tests): browser parser, refusals, `pongFor` and `createCommandGate` checked against the fixture.
+- `tests/test_td_sync_contract.py` (new, 17 cases): `make_preset_command` / `make_ping_command` emit exactly the fixture bytes, rejects raise `ValueError`, `RttTracker` matches the browser's pong (12 ms RTT), `CommandPacer` verdicts equal the browser's.
+- Pointer comments added in `src/sync/tdCommand.ts` and `td/morphogen_sync_commands.py` so whoever edits one twin knows the fixture exists.
+- No runtime behaviour changed. `npm test` 115 pass (was 110); `pytest tests/test_td_sync_*.py` 53 pass (was 37).
+
+**Reviewed:** both command-plane twins line by line for drift (id normalisation, compact JSON, token-bucket clock handling): they agree today.
+
+**Next focus candidates:** `setParams` with a limits review against `PARAM_LIMITS` (add its rows to the fixture first), show TD RTT in the browser Sync panel, Field-panel feed / kill sliders, move the kernel into a Worker.
+
 ## 2026-10-22 (09:30 ET — daily commit)
 
 **Landed:** Morphogen v2 TD-side command helper — TouchDesigner can now actually send the `preset` / `ping` commands the browser learned on 2026-10-21, and measure round-trip time.

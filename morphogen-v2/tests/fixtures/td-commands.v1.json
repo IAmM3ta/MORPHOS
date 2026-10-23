@@ -1,0 +1,36 @@
+{
+  "_comment": "Golden cross-language contract for the Morphogen v2 TD -> app control plane (v1). Read by BOTH tests/tdContract.test.mjs (browser parser + gate in src/sync/tdCommand.ts) and ../tests/test_td_sync_contract.py (TD builders + pacer in td/morphogen_sync_commands.py). If you change either side's rules, update this file and both suites must still pass. Added 2026-10-23.",
+  "version": 1,
+  "built": [
+    { "build": ["preset", "coral"], "raw": "{\"v\":1,\"cmd\":\"preset\",\"id\":\"coral\"}", "parsed": { "cmd": "preset", "id": "coral" } },
+    { "build": ["preset", "  Mitosis "], "raw": "{\"v\":1,\"cmd\":\"preset\",\"id\":\"mitosis\"}", "parsed": { "cmd": "preset", "id": "mitosis" } },
+    { "build": ["preset", "USKATE"], "raw": "{\"v\":1,\"cmd\":\"preset\",\"id\":\"uskate\"}", "parsed": { "cmd": "preset", "id": "uskate" } },
+    { "build": ["preset_unknown", "nebula"], "raw": "{\"v\":1,\"cmd\":\"preset\",\"id\":\"nebula\"}", "parsed": { "cmd": "preset", "id": "nebula" } },
+    { "build": ["ping", 1000], "raw": "{\"v\":1,\"cmd\":\"ping\",\"t\":1000}", "parsed": { "cmd": "ping", "t": 1000 } },
+    { "build": ["ping", 1234.5], "raw": "{\"v\":1,\"cmd\":\"ping\",\"t\":1234.5}", "parsed": { "cmd": "ping", "t": 1234.5 } }
+  ],
+  "builder_rejects": [
+    ["preset", ""],
+    ["preset", "co ral"],
+    ["preset", "nebula"],
+    ["preset", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
+    ["ping", "NaN"],
+    ["ping", "Infinity"],
+    ["ping", true]
+  ],
+  "browser_refuses": [
+    "{\"v\":1,\"cmd\":\"setParams\",\"feed\":0.05}",
+    "{\"v\":1,\"cmd\":\"freeze\"}",
+    "{\"v\":2,\"cmd\":\"preset\",\"id\":\"coral\"}",
+    "{\"cmd\":\"preset\",\"id\":\"coral\"}",
+    "{\"v\":1,\"cmd\":\"preset\",\"id\":\"co ral\"}",
+    "[1,2,3]",
+    "not json"
+  ],
+  "pong": { "ping_raw": "{\"v\":1,\"cmd\":\"ping\",\"t\":1000}", "reply": { "v": 1, "pong": "morphogen", "t": 1000 } },
+  "gate": {
+    "_comment": "Clock readings in ms fed one-by-one to a fresh 10/s burst-5 bucket; allow[i] is the expected verdict. Covers the burst, refill at 100 ms/token, a backwards clock that must not mint tokens, and a long idle capped at the burst.",
+    "clock_ms": [0, 0, 0, 0, 0, 0, 50, 100, 100, 50, 250, 250, 250, 5000, 5000, 5000, 5000, 5000, 5000],
+    "allow":    [true, true, true, true, true, false, false, true, false, false, true, false, false, true, true, true, true, true, false]
+  }
+}
