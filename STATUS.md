@@ -2,6 +2,20 @@
 
 RedBot daily cadence notes for `IAmM3ta/MORPHOS`. Newest first.
 
+## 2026-10-24 (09:15 ET — daily commit)
+
+**Landed:** a per-session tally of TD → app command frames, so a TouchDesigner cue that "did nothing" can be diagnosed instead of guessed at.
+
+- `morphogen-v2/src/sync/tdCommand.ts`: new `TdCommandStats` type, `emptyCommandStats()` and `describeCommandStats()` (one line such as `TD cmds: 3 applied · 1 ping · 2 paced`; zero buckets hidden; NaN / negative counts never rendered).
+- `morphogen-v2/src/sync/tdClient.ts`: `handleCommand` puts each authed frame in exactly one bucket (refused by the parser, paced by the rate gate, ping answered, or applied), counts handler throws, stamps `lastAt` from the injectable clock, and resets the tally with the gate on every fresh ack. New `commandStats()` returns a detached copy; `snapshot()` / `TdSnapshot` are untouched so the Sync chip is unaffected.
+- `morphogen-v2/src/main.ts`: the `?debug=1` hook exposes `tdCommands` (the tally plus its text line).
+- `morphogen-v2/tests/tdCommandStats.test.mjs` (new, 3 tests): text rendering, bucket invariant (`applied + pings + refused + paced === frames`), refused frames don't spend rate tokens, pre-ack frames never counted, no token or payload text kept, reset after drop → retry → ack.
+- No drop / accept behaviour changed. `npm test` 118 pass (was 115); `tsc --noEmit` clean; no-WebGL check OK; TD pytest 53 pass.
+
+**Reviewed:** the 2026-10-23 contract fixture still matches both twins; nothing in the fixture needed to change because the wire format is the same.
+
+**Next focus candidates:** show the tally and TD RTT in the Sync panel, `setParams` with a limits review against `PARAM_LIMITS` (fixture rows first), Field-panel feed / kill sliders, move the kernel into a Worker.
+
 ## 2026-10-23 (09:20 ET — daily commit)
 
 **Landed:** a shared TD ↔ browser contract fixture, so the two hand-written halves of the Sync command plane can't drift apart unnoticed.

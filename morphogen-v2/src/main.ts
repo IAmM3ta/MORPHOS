@@ -6,6 +6,7 @@ import { GrayScott, PRESET_MITOSIS } from './sim/grayScott';
 import { Canvas2DRenderer } from './render/canvas2d';
 import { HumEngine } from './audio/hum';
 import { TdClient, isSecurePage } from './sync/tdClient';
+import { describeCommandStats } from './sync/tdCommand';
 import { loadSyncSettings } from './sync/syncUrl';
 import {
   mountMuteToggle,
@@ -199,6 +200,8 @@ function main(): void {
       locks: lockCount,
       preset: field.current(),
       td: td.snapshot(),
+      // Per-session TD command tally: applied / pings / refused / paced.
+      tdCommands: { ...td.commandStats(), line: describeCommandStats(td.commandStats()) },
       sync: syncSettings,
     });
   }

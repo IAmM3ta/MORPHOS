@@ -27,9 +27,16 @@
  */
 
 import { sanitizeTdUrl, type TdHostClass } from './syncUrl';
-import { parseTdCommand, pongFor, createCommandGate, type TdCommand } from './tdCommand';
+import {
+  parseTdCommand,
+  pongFor,
+  createCommandGate,
+  emptyCommandStats,
+  type TdCommand,
+  type TdCommandStats,
+} from './tdCommand';
 
-export type { TdCommand } from './tdCommand';
+export type { TdCommand, TdCommandStats } from './tdCommand';
 
 export type SyncPath = 'companion' | 'midi' | 'wss';
 
@@ -310,6 +317,13 @@ export class TdClient {
   onCommand?: (cmd: TdCommand) => void;
   /** Rate limit for TD commands; refilled on every fresh authed session. */
   private readonly commandGate = createCommandGate();
+  /**
+   * What happened to this session's authed TD frames (2026-10-24). Reset with
+   * the gate on every fresh ack, so a reconnect starts from zero. Read it via
+   * commandStats(); kept separate from snapshot() so TdSnapshot stays the
+   * connection-state view the Sync chip renders.
+   */
+  private stats: TdCommandStats = emptyCommandStats();
   /** Clock for the command gate (injectable via TdClientOptions.now for tests). */
   private readonly now: () => number;
 
@@ -427,6 +441,7 @@ export class TdClient {
       this.lastError = null;
       this.reconnectAttempt = 0; // healthy again: next drop starts from the base delay
       this.commandGate.reset(); // fresh session, fresh command budget
+      this.stats = emptyCommandStats(); // …and a fresh tally
       this.onStatus?.(this.status, null);
       this.timer = setInterval(() => {
         if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
@@ -442,16 +457,29 @@ export class TdClient {
    * session). A throwing onCommand handler is contained here for the same reason.
    */
   private handleCommand(ws: WebSocket, data: unknown): void {
+    const at = this.now();
+    this.stats.frames += 1;
+    this.stats.lastAt = Number.isFinite(at) ? at : this.stats.lastAt;
     const cmd = parseTdCommand(data);
-    if (!cmd || !this.commandGate.allow(this.now())) return;
+    if (!cmd) {
+      this.stats.refused += 1;
+      return;
+    }
+    if (!this.commandGate.allow(at)) {
+      this.stats.paced += 1;
+      return;
+    }
     if (cmd.cmd === 'ping') {
+      this.stats.pings += 1;
       if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(pongFor(cmd)));
       return;
     }
+    this.stats.applied += 1;
     try {
       this.onCommand?.(cmd);
     } catch {
       // handler bugs stay local; telemetry keeps flowing
+      this.stats.handlerErrors += 1;
     }
   }
 
@@ -521,6 +549,11 @@ export class TdClient {
       maxReconnectAttempts: this.maxReconnectAttempts,
       nextRetryAt: this.nextRetryAt,
     };
+  }
+
+  /** Copy of this session's TD command tally (feed to describeCommandStats). */
+  commandStats(): TdCommandStats {
+    return { ...this.stats };
   }
 
   /**

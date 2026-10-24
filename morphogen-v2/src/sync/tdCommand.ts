@@ -24,6 +24,12 @@
  * and rate-limited by createCommandGate so a runaway TD script can't thrash
  * the kernel 1000×/s.
  *
+ * Counters (2026-10-24): TdClient tallies what happened to every authed frame
+ * in a TdCommandStats record (applied / pings / refused / paced / handler
+ * errors). describeCommandStats turns it into one short line for the debug
+ * snapshot and, later, the Sync panel, so "TD sent it but nothing changed"
+ * can be told apart from "TD's frames were refused" or "TD was rate-limited".
+ *
  * Contract (2026-10-23): td/morphogen_sync_commands.py is the TD-side twin of
  * this file. tests/fixtures/td-commands.v1.json pins the exact frames, refusals
  * and rate-gate verdicts both sides must agree on; if you change a rule here,
@@ -120,4 +126,50 @@ export function createCommandGate(
       last = null;
     },
   };
+}
+
+/**
+ * Per-session tally of authed TD → app frames (2026-10-24). Every frame that
+ * reaches TdClient.handleCommand lands in exactly one bucket, so
+ * applied + pings + refused + paced === frames:
+ *   refused       → parseTdCommand returned null (junk, reserved, oversized)
+ *   paced         → well-formed but the rate gate said no
+ *   pings         → answered in-client with a pong
+ *   applied       → handed to onCommand (preset today)
+ * handlerErrors counts applied commands whose onCommand handler threw (it is
+ * a subset of applied, not a separate bucket). lastAt is the client clock
+ * (TdClientOptions.now) of the latest frame, or null before the first.
+ * Counts are plain integers: no ids, payload text or tokens are kept, so the
+ * record is safe to show in the UI or a debug dump.
+ */
+export type TdCommandStats = {
+  frames: number;
+  applied: number;
+  pings: number;
+  refused: number;
+  paced: number;
+  handlerErrors: number;
+  lastAt: number | null;
+};
+
+/** A zeroed tally (TdClient starts each authed session with one). */
+export function emptyCommandStats(): TdCommandStats {
+  return { frames: 0, applied: 0, pings: 0, refused: 0, paced: 0, handlerErrors: 0, lastAt: null };
+}
+
+/**
+ * One short human line for a tally, e.g. "TD cmds: 3 applied · 1 ping · 2 paced".
+ * Zero buckets are left out; an empty session reads "TD cmds: none yet".
+ */
+export function describeCommandStats(s: TdCommandStats): string {
+  const parts: string[] = [];
+  const add = (n: number, one: string, many: string = one) => {
+    if (Number.isFinite(n) && n > 0) parts.push(`${Math.floor(n)} ${n === 1 ? one : many}`);
+  };
+  add(s.applied, 'applied');
+  add(s.pings, 'ping', 'pings');
+  add(s.refused, 'refused');
+  add(s.paced, 'paced');
+  add(s.handlerErrors, 'handler error', 'handler errors');
+  return `TD cmds: ${parts.length ? parts.join(' · ') : 'none yet'}`;
 }
