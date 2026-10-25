@@ -27,6 +27,14 @@ Rules mirror the browser so TD never sends a frame the app would silently drop:
 
 Tested without TouchDesigner in tests/test_td_sync_commands.py.
 
+Send tally (2026-10-25): `SendStats` counts what TD actually did with each
+command it tried to send (sent preset / sent ping / paced out / nobody authed),
+and `describe_send_stats()` renders the same one-line style as the browser's
+describeCommandStats ("TD cmds: 3 applied · 1 ping"). Read the two side by
+side: if TD says "3 presets" but the browser says "none yet", the frames are
+not reaching an authed session; if TD says "2 paced", the cue stack fired
+faster than the 10/s, burst-5 limit and TD held those frames back itself.
+
 Contract (2026-10-23): morphogen-v2/tests/fixtures/td-commands.v1.json pins the
 exact frame bytes, refusals and pacer verdicts this module and the browser must
 agree on. Change the fixture first if a rule changes, then keep both
@@ -205,3 +213,68 @@ class RttTracker:
         s = sorted(self.samples)
         mid = len(s) // 2
         return s[mid] if len(s) % 2 else (s[mid - 1] + s[mid]) / 2.0
+
+
+# Outcomes SendStats.record() accepts (returned by the callbacks' _broadcast).
+SENT = "sent"
+PACED = "paced"
+NO_CLIENT = "no_client"
+
+
+@dataclass
+class SendStats:
+    """TD-side tally of outbound commands, the twin of the browser's TdCommandStats.
+
+    The browser counts what it *received*; this counts what TD *tried to send*
+    and why a frame didn't go. Without it, send_preset() returning 0 could mean
+    either "rate-limited" or "no authed browser", and the two need different
+    fixes (slow the cue stack vs. check Syncsecret / the browser's ?td= URL).
+    Reset it whenever a fresh authed session starts, like the browser does.
+    """
+
+    presets: int = 0
+    pings: int = 0
+    paced: int = 0
+    no_client: int = 0
+
+    def record(self, kind: str, outcome: str) -> None:
+        """Count one send attempt. kind is "preset" or "ping"; unknown values are ignored."""
+        if outcome == SENT:
+            if kind == "preset":
+                self.presets += 1
+            elif kind == "ping":
+                self.pings += 1
+        elif outcome == PACED:
+            self.paced += 1
+        elif outcome == NO_CLIENT:
+            self.no_client += 1
+
+    def reset(self) -> None:
+        self.presets = self.pings = self.paced = self.no_client = 0
+
+    def as_rows(self) -> List[List[Any]]:
+        """Rows for an optional `morphogen_cmds` Table DAT (name, count)."""
+        return [
+            ["presets", self.presets],
+            ["pings", self.pings],
+            ["paced", self.paced],
+            ["no_client", self.no_client],
+        ]
+
+
+def describe_send_stats(s: SendStats) -> str:
+    """One short line, same shape as describeCommandStats in tdCommand.ts.
+
+    Zero counters are omitted; an untouched tally reads "TD sent: none yet".
+    """
+    parts: List[str] = []
+
+    def add(n: int, one: str, many: str) -> None:
+        if isinstance(n, int) and not isinstance(n, bool) and n > 0:
+            parts.append(f"{n} {one if n == 1 else many}")
+
+    add(s.presets, "preset", "presets")
+    add(s.pings, "ping", "pings")
+    add(s.paced, "paced", "paced")
+    add(s.no_client, "with no authed client", "with no authed client")
+    return "TD sent: " + (" · ".join(parts) if parts else "none yet")

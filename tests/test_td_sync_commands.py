@@ -23,7 +23,9 @@ from morphogen_sync_commands import (  # noqa: E402
     TELEMETRY,
     CommandPacer,
     RttTracker,
+    SendStats,
     classify_inbound,
+    describe_send_stats,
     make_ping_command,
     make_preset_command,
     normalize_preset_id,
@@ -135,12 +137,13 @@ class FakeWsDat:
 @pytest.fixture
 def td(monkeypatch):
     now = [1_800_000_000_000.0]
-    tables = {"morphogen_table": FakeTable(), "morphogen_grid": FakeTable(), "morphogen_rtt": FakeTable()}
+    tables = {"morphogen_table": FakeTable(), "morphogen_grid": FakeTable(), "morphogen_rtt": FakeTable(), "morphogen_cmds": FakeTable()}
     monkeypatch.setattr(cb, "op", tables.get, raising=False)
     monkeypatch.setattr(cb, "debug", lambda *a: None, raising=False)
     monkeypatch.setattr(cb, "_gate", None)
     monkeypatch.setattr(cb, "_pacer", CommandPacer(clock_ms=lambda: now[0]))
     monkeypatch.setattr(cb, "_rtt", RttTracker(clock_ms=lambda: now[0]))
+    monkeypatch.setattr(cb, "_stats", SendStats())
     dat = FakeWsDat()
     cb.onConnect(dat, "a")
     cb.onConnect(dat, "b")  # never authenticates
@@ -174,3 +177,54 @@ def test_pong_updates_rtt_without_blanking_telemetry(td):
     assert tables["morphogen_rtt"].rows[0] == ["last_ms", 8.0]
     cb.onReceiveText(dat, 0, json.dumps({"v": 1, "hmm": 1}), "a")  # unknown authed frame
     assert len(tables["morphogen_table"].rows) == 2
+
+
+# --- 2026-10-25: TD-side send tally -----------------------------------------
+
+
+def test_describe_send_stats_matches_browser_style():
+    s = SendStats()
+    assert describe_send_stats(s) == "TD sent: none yet"
+    s.record("preset", "sent")
+    s.record("preset", "sent")
+    s.record("ping", "sent")
+    s.record("ping", "paced")
+    s.record("preset", "no_client")
+    s.record("preset", "bogus")  # unknown outcome: ignored, never raises
+    assert describe_send_stats(s) == "TD sent: 2 presets · 1 ping · 1 paced · 1 with no authed client"
+    s.reset()
+    assert describe_send_stats(s) == "TD sent: none yet"
+
+
+def test_send_tally_separates_paced_from_no_client(td):
+    dat, tables, _ = td
+    for _ in range(6):  # burst of 5, then one paced out
+        cb.send_preset(dat, "coral")
+    assert (cb._stats.presets, cb._stats.paced, cb._stats.no_client) == (5, 1, 0)
+    assert tables["morphogen_cmds"].rows == [["presets", 5], ["pings", 0], ["paced", 1], ["no_client", 0]]
+    assert cb.send_stats_line() == "TD sent: 5 presets · 1 paced"
+    cb.onDisconnect(dat, "a")
+    assert cb.send_preset(dat, "coral") == 0
+    assert cb._stats.no_client == 1
+
+
+def test_paced_ping_is_not_left_pending(td):
+    dat, _, now = td
+    for _ in range(5):
+        cb.send_preset(dat, "mazes")  # drain the burst
+    assert cb.send_ping(dat) == 0
+    assert cb._rtt._pending == []  # nothing stamped for a frame that never went
+    now[0] += 1000.0  # bucket refills
+    assert cb.send_ping(dat) == 1
+    assert len(cb._rtt._pending) == 1 and cb._stats.pings == 1
+
+
+def test_fresh_auth_resets_send_tally(td):
+    dat, tables, now = td
+    cb.send_preset(dat, "worms")
+    assert cb._stats.presets == 1
+    hello = json.dumps({"v": 1, "hello": "morphogen", "t": now[0], "auth": "correct-horse-battery-staple"})
+    cb.onConnect(dat, "c")
+    cb.onReceiveText(dat, 0, hello, "c")
+    assert describe_send_stats(cb._stats) == "TD sent: none yet"
+    assert tables["morphogen_cmds"].rows[0] == ["presets", 0]

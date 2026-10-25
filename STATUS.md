@@ -2,6 +2,17 @@
 
 RedBot daily cadence notes for `IAmM3ta/MORPHOS`. Newest first.
 
+## 2026-10-25 (09:20 ET — daily commit)
+
+**Landed:** the TD-side twin of yesterday's browser command tally, so both ends of the Sync socket can say what happened to a cue.
+
+- `morphogen-v2/td/morphogen_sync_commands.py`: new `SendStats` (presets / pings sent, `paced` out by TD's own 10/s burst-5 pacer, `no_client` when nobody is authed), `as_rows()` for a Table DAT, and `describe_send_stats()` in the same one-line style as the browser's `describeCommandStats` (`TD sent: 2 presets · 1 ping · 1 paced`; zero buckets hidden; `TD sent: none yet` when idle).
+- `morphogen-v2/td/morphogen_sync_callbacks.py`: `_broadcast` now records an outcome per attempt and writes an optional `morphogen_cmds` Table DAT; `send_stats_line()` helper; the tally resets with the pacer on each fresh authed hello (matching the browser). `send_preset()` still returns 0 for "didn't go", but the tally now says *why*.
+- Bug fix: `send_ping()` used to stamp a ping into `RttTracker` before the pacer check, so a paced-out ping sat in the pending list forever. The frame is now built only once it will actually be sent.
+- `tests/test_td_sync_commands.py`: 4 new tests (describe format, paced vs no-client split + table rows, paced ping not pending, reset on fresh auth). TD pytest 57 pass (was 53); `npm test` 118 pass (unchanged, no browser change).
+
+**Next:** surface `tdCommands` / RTT in the Sync panel instead of only `?debug=1`.
+
 ## 2026-10-24 (09:15 ET — daily commit)
 
 **Landed:** a per-session tally of TD → app command frames, so a TouchDesigner cue that "did nothing" can be diagnosed instead of guessed at.
