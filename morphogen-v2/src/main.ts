@@ -12,6 +12,7 @@ import {
   mountMuteToggle,
   mountPanelStubs,
   mountSyncStatus,
+  mountSyncCommandLine,
   nextLockCount,
   resetNeedsConfirm,
   LOOP_MAX,
@@ -129,6 +130,9 @@ function main(): void {
     document.querySelector<HTMLButtonElement>('#syncRetry'),
     td,
   );
+  // TD -> app command tally next to the chip, visible only while live (2026-10-26).
+  const syncCmdsEl = document.querySelector<HTMLElement>('#syncCmds');
+  const unmountSyncCmds = syncCmdsEl ? mountSyncCommandLine(syncCmdsEl, td) : () => {};
 
   // Sound mute: label + aria-pressed mirror HumEngine; safe before ENTER.
   const toggleMute = mountMuteToggle(qs<HTMLElement>('#muteHum'), hum);
@@ -212,6 +216,7 @@ function main(): void {
     unmountPointer();
     unmountPanels();
     td.disconnect();
+    unmountSyncCmds();
     unmountSync();
     hum.dispose();
   };

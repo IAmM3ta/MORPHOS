@@ -4,6 +4,7 @@
  * pure helpers so tests/panels.test.mjs can cover them without a DOM.
  */
 import { describeTdStatus, type TdSnapshot, type TdStatus } from '../sync/tdClient';
+import { describeCommandStats, type TdCommandStats } from '../sync/tdCommand';
 
 export type PanelId = 'field' | 'image' | 'body' | 'sound' | 'sync';
 
@@ -203,5 +204,79 @@ export function mountSyncStatus(
     stopTick();
     td.onStatus = prev;
     retryBtn?.removeEventListener('click', onRetry);
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Sync command line (2026-10-26)
+// ---------------------------------------------------------------------------
+
+/** What the TD command line needs from a TdClient (structural, so tests can fake it). */
+export type SyncCommandSource = {
+  snapshot(): TdSnapshot;
+  commandStats(): TdCommandStats;
+  onStatus?: (s: TdStatus, err?: string | null) => void;
+};
+
+/** Refresh rate for the command tally while live. Commands are capped at 10/s, so 1 Hz is plenty for a human readout. */
+export const SYNC_CMDS_TICK_MS = 1000;
+
+/**
+ * Mount the "TD cmds: 3 applied · 1 ping" line next to the Sync chip.
+ *
+ * Until today the per-session command tally (TdClient.commandStats, added
+ * 2026-10-24) was only visible through the ?debug=1 console hook, so in a show
+ * you could not tell "TD's cue reached the browser and was applied" from "TD
+ * is rate-limited" without opening devtools. This line puts the same
+ * describeCommandStats text on screen:
+ *
+ *   - shown only while the session is 'open' (authed); hidden otherwise, so a
+ *     stale tally from a dropped session never looks live;
+ *   - refreshed on every status change and, only while open, on a slow
+ *     SYNC_CMDS_TICK_MS interval (no timer at all when Sync is off);
+ *   - the DOM is written only when the text actually changes;
+ *   - tone "warn" when anything was refused / paced / threw, so a problem is
+ *     visible at a glance; "ok" otherwise.
+ *
+ * The text is built from counters only, never from frame contents or the auth
+ * token. Chains any onStatus handler already installed (mountSyncStatus included)
+ * and returns an unmount that restores it.
+ */
+export function mountSyncCommandLine(
+  el: HTMLElement,
+  td: SyncCommandSource,
+  tickMs: number = SYNC_CMDS_TICK_MS,
+): () => void {
+  let tick: ReturnType<typeof setInterval> | null = null;
+  let lastText: string | null = null;
+  const stopTick = () => {
+    if (tick) clearInterval(tick);
+    tick = null;
+  };
+  const render = () => {
+    const live = td.snapshot().status === 'open';
+    el.hidden = !live;
+    if (!live) {
+      stopTick();
+      return;
+    }
+    const s = td.commandStats();
+    const text = describeCommandStats(s);
+    if (text !== lastText) {
+      el.textContent = text;
+      lastText = text;
+    }
+    el.dataset.tone = s.refused > 0 || s.paced > 0 || s.handlerErrors > 0 ? 'warn' : 'ok';
+    if (!tick) tick = setInterval(render, Number.isFinite(tickMs) && tickMs > 0 ? tickMs : SYNC_CMDS_TICK_MS);
+  };
+  const prev = td.onStatus;
+  td.onStatus = (s, err) => {
+    prev?.(s, err);
+    render();
+  };
+  render();
+  return () => {
+    stopTick();
+    td.onStatus = prev;
   };
 }

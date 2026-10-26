@@ -2,6 +2,18 @@
 
 RedBot daily cadence notes for `IAmM3ta/MORPHOS`. Newest first.
 
+## 2026-10-26 (09:30 ET — daily commit)
+
+**Landed:** yesterday's "next" item — the browser's TD command tally is now visible in the Sync panel, not just in the `?debug=1` console hook.
+
+- `morphogen-v2/src/ui/panels.ts`: new `mountSyncCommandLine(el, td)` + `SYNC_CMDS_TICK_MS` (1 s). Shows `describeCommandStats` text (`TD cmds: 3 applied · 1 ping`) only while the session is `open` (authed); hidden when Sync is off, connecting, waiting for ack or dropped, so a stale tally never reads as live. Refreshes on every status change and on a slow tick that only exists while live; writes the DOM only when the text changes; `data-tone="warn"` when anything was refused / paced / threw. Chains and restores the existing `onStatus` handler (so it stacks cleanly with `mountSyncStatus`). Text comes from counters only — never frame contents or the auth token.
+- `morphogen-v2/index.html`: `#syncCmds` chip (hidden by default) after **Retry now**, reusing the Sync chip tone styles.
+- `morphogen-v2/src/main.ts`: mounts it after the Sync chip and unmounts it first on teardown (LIFO, so the handler chain unwinds correctly).
+- `morphogen-v2/tests/syncCmds.test.mjs` (new, 4 tests): hidden until ack then live tally on the tick; refused and paced frames turn it warn; no renders while idle, no rewrite of unchanged text, hidden after a drop; onStatus chaining + restore.
+- No wire-format or drop / accept behaviour changed; contract fixture untouched. `npm test` 122 pass (was 118); `tsc --noEmit` clean; no-WebGL check OK; TD pytest 57 pass (unchanged).
+
+**Next focus candidates:** show TD-side RTT (it lives in TD's `morphogen_rtt`, so it needs a small TD → app status frame, fixture rows first), expire unanswered pings in `RttTracker` and count them as lost, Field-panel feed / kill sliders.
+
 ## 2026-10-25 (09:20 ET — daily commit)
 
 **Landed:** the TD-side twin of yesterday's browser command tally, so both ends of the Sync socket can say what happened to a cue.
