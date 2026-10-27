@@ -2,6 +2,17 @@
 
 RedBot daily cadence notes for `IAmM3ta/MORPHOS`. Newest first.
 
+## 2026-10-27 (09:30 ET — daily commit)
+
+**Landed:** an architecture + operator note for the TD → app command channel, guarded by a drift test, so the six days of Sync work (10-21 → 10-26) read as one system instead of a long README sentence.
+
+- `docs/morphogen-redteam/TD-COMMANDS.md` (new): who owns what across browser and TD files, a mermaid lifecycle (hello → ack → preset / ping → pong), accepted vs refused frames, the limits table (512 B, 32-char ids, 10/s, burst 5), the order of checks (refused before the gate and token-free; pings gated), a troubleshooting table for reading the browser's `TD cmds:` chip beside TD's `TD sent:` line, and the steps for changing the contract.
+- `morphogen-v2/tests/tdCommandsDoc.test.mjs` (new, 4 tests): the doc's Limits table must equal the constants in `src/sync/tdCommand.ts`, its example frames must parse and its pong must match `pongFor` and the fixture, the reserved `setParams` / `freeze` it names must be refused, and it must reference the fixture and code files it maps.
+- `morphogen-v2/README.md`: Docs list links the new note; the Sync architecture line points to it.
+- No runtime change; contract fixture untouched. `npm test` 126 pass (was 122); TD pytest unchanged.
+
+**Next focus candidates:** expire unanswered pings in `RttTracker` and count them as lost, a TD → app status frame so the browser can show TD-side RTT (fixture rows first), Field-panel feed / kill sliders.
+
 ## 2026-10-26 (09:30 ET — daily commit)
 
 **Landed:** yesterday's "next" item — the browser's TD command tally is now visible in the Sync panel, not just in the `?debug=1` console hook.
