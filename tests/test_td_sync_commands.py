@@ -25,6 +25,7 @@ from morphogen_sync_commands import (  # noqa: E402
     RttTracker,
     SendStats,
     classify_inbound,
+    describe_rtt,
     describe_send_stats,
     make_ping_command,
     make_preset_command,
@@ -228,3 +229,82 @@ def test_fresh_auth_resets_send_tally(td):
     cb.onReceiveText(dat, 0, hello, "c")
     assert describe_send_stats(cb._stats) == "TD sent: none yet"
     assert tables["morphogen_cmds"].rows[0] == ["presets", 0]
+
+
+# --- Lost pings (2026-10-28) -------------------------------------------------
+
+
+def test_unanswered_ping_expires_into_lost():
+    now = [10_000.0]
+    r = RttTracker(clock_ms=lambda: now[0], timeout_ms=5000.0)
+    t_old = json.loads(r.ping())["t"]
+    now[0] += 5000.0
+    r.ping()  # exactly at the timeout: still pending
+    assert r.lost == 0 and r.outstanding == 2
+    now[0] += 0.5
+    t_new = json.loads(r.ping())["t"]  # first ping is now 5000.5 ms old
+    assert r.lost == 1 and r.outstanding == 2
+    assert r.on_pong({"v": 1, "pong": "morphogen", "t": t_old}) is None  # late pong ignored
+    assert r.on_pong({"v": 1, "pong": "morphogen", "t": t_new}) == 0.0
+    assert r.samples == [0.0]
+
+
+def test_pong_side_expiry_and_bad_clock_fail_safe():
+    now = [0.0]
+    r = RttTracker(clock_ms=lambda: now[0], timeout_ms=100.0)
+    t = json.loads(r.ping())["t"]
+    now[0] = 150.0
+    assert r.on_pong({"v": 1, "pong": "morphogen", "t": t}) is None  # expired on arrival
+    assert r.lost == 1 and r.outstanding == 0
+    r.ping()
+    now[0] = math.nan
+    assert r.on_pong({"v": 1, "pong": "morphogen", "t": 1.0}) is None
+    assert r.outstanding == 1  # non-finite clock never expires anything
+    now[0] = -1e9  # clock stepped backwards: pings look younger, not lost
+    r.ping()
+    assert r.lost == 1
+
+
+def test_overflow_counts_as_lost_and_reset_clears():
+    now = [0.0]
+    r = RttTracker(clock_ms=lambda: now[0], max_outstanding=3)
+    for _ in range(5):
+        now[0] += 1.0
+        r.ping()
+    assert r.outstanding == 3 and r.lost == 2
+    r.reset()
+    assert (r.outstanding, r.lost, r.samples) == (0, 0, [])
+
+
+def test_describe_rtt_and_rows():
+    now = [0.0]
+    r = RttTracker(clock_ms=lambda: now[0], timeout_ms=10.0)
+    assert describe_rtt(r) == "TD rtt: no pongs yet"
+    assert r.as_rows()[0] == ["last_ms", ""]
+    t = json.loads(r.ping())["t"]
+    now[0] += 8.0
+    r.on_pong({"v": 1, "pong": "morphogen", "t": t})
+    r.ping()
+    now[0] += 20.0
+    r.ping()
+    assert describe_rtt(r) == "TD rtt: 8.0 ms (median 8.0) · 1 lost"
+    assert dict((k, v) for k, v in r.as_rows()) == {
+        "last_ms": 8.0, "median_ms": 8.0, "samples": 1, "outstanding": 1, "lost": 1,
+    }
+
+
+def test_callbacks_surface_lost_pings_and_reset_on_fresh_auth(td):
+    dat, tables, now = td
+    cb.send_ping(dat)
+    rows = dict((k, v) for k, v in tables["morphogen_rtt"].rows)
+    assert rows["outstanding"] == 1 and rows["lost"] == 0
+    now[0] += 6000.0  # no pong comes back
+    cb.send_ping(dat)
+    rows = dict((k, v) for k, v in tables["morphogen_rtt"].rows)
+    assert rows["lost"] == 1 and rows["outstanding"] == 1
+    assert cb.rtt_line() == "TD rtt: no pongs yet · 1 lost"
+    hello = json.dumps({"v": 1, "hello": "morphogen", "t": now[0], "auth": "correct-horse-battery-staple"})
+    cb.onConnect(dat, "c")
+    cb.onReceiveText(dat, 0, hello, "c")  # fresh authed session
+    assert cb._rtt.lost == 0 and cb._rtt.outstanding == 0
+    assert dict((k, v) for k, v in tables["morphogen_rtt"].rows)["lost"] == 0

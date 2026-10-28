@@ -13,8 +13,8 @@ is the map. `tests/tdCommandsDoc.test.mjs` fails if the numbers below drift from
 | Browser | `morphogen-v2/src/sync/tdCommand.ts` | The only parser for inbound TD frames (`parseTdCommand`), the rate gate (`createCommandGate`), the pong shape (`pongFor`) and the tally line (`describeCommandStats`). Pure, no DOM. |
 | Browser | `morphogen-v2/src/sync/tdClient.ts` | `handleCommand` routes each authed frame through parse → gate → ping/apply and counts it in `commandStats()`. |
 | Browser | `morphogen-v2/src/ui/panels.ts` | `mountSyncCommandLine` shows the tally as the `#syncCmds` chip while the session is authed. |
-| TD | `morphogen-v2/td/morphogen_sync_commands.py` | Frame builders (`make_preset_command`, `make_ping_command`), `CommandPacer` (same bucket as the browser), `RttTracker`, `SendStats` / `describe_send_stats`. |
-| TD | `morphogen-v2/td/morphogen_sync_callbacks.py` | `send_preset(dat, id)` / `send_ping(dat)` broadcast to **authed clients only**; pongs go to `morphogen_rtt`, send tallies to `morphogen_cmds`, `send_stats_line()` prints one line. |
+| TD | `morphogen-v2/td/morphogen_sync_commands.py` | Frame builders (`make_preset_command`, `make_ping_command`), `CommandPacer` (same bucket as the browser), `RttTracker` (RTT samples, 5 s lost-ping expiry, `describe_rtt`), `SendStats` / `describe_send_stats`. |
+| TD | `morphogen-v2/td/morphogen_sync_callbacks.py` | `send_preset(dat, id)` / `send_ping(dat)` broadcast to **authed clients only**; pongs and lost / outstanding pings go to `morphogen_rtt` (`rtt_line()` prints one line), send tallies to `morphogen_cmds`, `send_stats_line()` prints one line. |
 | Both | `morphogen-v2/tests/fixtures/td-commands.v1.json` | Golden contract: exact frame bytes, refusals, pong shape and gate verdicts. Read by the node suite and by pytest. |
 
 ## Lifecycle
@@ -80,7 +80,8 @@ session, `applied + pings + refused + paced === frames` on the browser side.
 | Browser `paced` grows (chip turns amber) | Frames reached the browser faster than 10/s burst 5, so TD's pacer was bypassed or the clocks disagree. | Something sending without `send_preset` / `send_ping`; a second TD sender. |
 | Browser `refused` grows | TD sent frames this build doesn't accept (reserved command, newer `v`, bad id). | TD script version vs. this contract; the fixture's `browser_refuses` list. |
 | Browser `handler errors` > 0 | The preset handler threw; telemetry kept flowing. | Browser console, `main.ts` preset routing. |
-| TD sent more pings than `morphogen_rtt` samples | Pongs lost or the session dropped mid-ping. | Network, reconnect count in the Sync chip. |
+| `morphogen_rtt` `lost` grows (or `rtt_line()` ends in `· N lost`) | Pings got no pong within 5 s (`RttTracker.timeout_ms`), or were pushed out by the 32-outstanding cap. Late pongs are ignored. | Network, the browser tab being backgrounded or frozen, reconnect count in the Sync chip. |
+| `outstanding` stays above 0 but `lost` stays 0 | Pings in flight younger than the timeout; expiry is checked on the next ping or pong, not on a timer. | Send another ping, or wait for the next cue. |
 
 ## Changing the contract
 

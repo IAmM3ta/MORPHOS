@@ -173,20 +173,48 @@ class RttTracker:
 
     Only pongs echoing a `t` we actually sent (and haven't matched yet) count,
     so a stale, duplicated or forged pong can't fake a latency figure.
+
+    Lost pings (2026-10-28): a ping that gets no pong within `timeout_ms` is
+    dropped from the pending list and counted in `lost`. Before this, an
+    unanswered ping sat in `_pending` until 32 newer ones pushed it out, so a
+    dead link showed up only as "the RTT table stopped changing" — it now shows
+    up as a climbing `lost` count. A pong that arrives after its ping expired
+    is ignored (it is already counted as lost, and its RTT would be misleading).
+    Pings pushed out by the `max_outstanding` cap are counted as lost too.
+
+    Expiry piggybacks on the clock read that ping() / on_pong() already make
+    (exactly one clock call each), so there is no timer to run in TD and the
+    contract test's two-tick clock script still holds. A non-finite clock
+    reading never expires anything (fail safe: no false "lost" on a bad clock),
+    and a clock that steps backwards just makes pings look younger.
     """
 
     clock_ms: Callable[[], float] = field(default=lambda: time.time() * 1000.0)
     window: int = 16
     max_outstanding: int = 32
+    timeout_ms: float = 5000.0
     _pending: List[float] = field(default_factory=list, init=False, repr=False)
     samples: List[float] = field(default_factory=list, init=False)
+    lost: int = field(default=0, init=False)
+
+    def _expire(self, now: float) -> None:
+        """Move pings older than timeout_ms from pending into the lost count."""
+        if not math.isfinite(now):
+            return
+        keep = [t for t in self._pending if now - t <= self.timeout_ms]
+        self.lost += len(self._pending) - len(keep)
+        self._pending = keep
 
     def ping(self) -> str:
         """Build a ping frame stamped with the current clock and remember it."""
         t = float(self.clock_ms())
+        self._expire(t)
         frame = make_ping_command(t)
         self._pending.append(t)
-        del self._pending[: max(0, len(self._pending) - self.max_outstanding)]
+        overflow = max(0, len(self._pending) - self.max_outstanding)
+        if overflow:
+            self.lost += overflow  # oldest unanswered pings give up their slot
+            del self._pending[:overflow]
         return frame
 
     def on_pong(self, payload: Any) -> Optional[float]:
@@ -194,13 +222,32 @@ class RttTracker:
         if not isinstance(payload, dict) or payload.get("pong") != "morphogen":
             return None
         t = payload.get("t")
-        if isinstance(t, bool) or not isinstance(t, (int, float)) or t not in self._pending:
+        if isinstance(t, bool) or not isinstance(t, (int, float)):
+            return None
+        now = float(self.clock_ms())
+        self._expire(now)  # a pong for an expired ping no longer matches
+        if t not in self._pending:
             return None
         self._pending.remove(t)
-        rtt = max(0.0, float(self.clock_ms()) - float(t))
+        rtt = max(0.0, now - float(t))
         self.samples.append(rtt)
         del self.samples[: max(0, len(self.samples) - self.window)]
         return rtt
+
+    def reset(self) -> None:
+        """Forget pending pings, samples and the lost count (fresh authed session).
+
+        Pings sent to a previous session can never be answered on the new one,
+        so they are dropped silently rather than reported as lost.
+        """
+        self._pending.clear()
+        self.samples.clear()
+        self.lost = 0
+
+    @property
+    def outstanding(self) -> int:
+        """Pings sent and still waiting for a pong (not yet expired)."""
+        return len(self._pending)
 
     @property
     def last_ms(self) -> Optional[float]:
@@ -213,6 +260,29 @@ class RttTracker:
         s = sorted(self.samples)
         mid = len(s) // 2
         return s[mid] if len(s) % 2 else (s[mid - 1] + s[mid]) / 2.0
+
+    def as_rows(self) -> List[list]:
+        """Rows for the optional `morphogen_rtt` Table DAT ("" = no sample yet)."""
+        last, med = self.last_ms, self.median_ms
+        return [
+            ["last_ms", "" if last is None else round(last, 2)],
+            ["median_ms", "" if med is None else round(med, 2)],
+            ["samples", len(self.samples)],
+            ["outstanding", self.outstanding],
+            ["lost", self.lost],
+        ]
+
+
+def describe_rtt(tracker: "RttTracker") -> str:
+    """One line for a Text TOP, e.g. 'TD rtt: 8.0 ms (median 9.5) · 1 lost'.
+
+    Mirrors describe_send_stats(): the lost bucket is hidden while it is zero.
+    """
+    if tracker.last_ms is None:
+        head = "TD rtt: no pongs yet"
+    else:
+        head = f"TD rtt: {tracker.last_ms:.1f} ms (median {tracker.median_ms:.1f})"
+    return head + (f" · {tracker.lost} lost" if tracker.lost else "")
 
 
 # Outcomes SendStats.record() accepts (returned by the callbacks' _broadcast).

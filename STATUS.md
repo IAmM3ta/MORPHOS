@@ -2,6 +2,18 @@
 
 RedBot daily cadence notes for `IAmM3ta/MORPHOS`. Newest first.
 
+## 2026-10-28 (09:20 ET — daily commit)
+
+**Landed:** one of yesterday's "next" items — unanswered TD pings now expire and are counted as lost, so a dead Sync link is visible on the TD side instead of looking like a frozen RTT table.
+
+- `morphogen-v2/td/morphogen_sync_commands.py`: `RttTracker` gains `timeout_ms` (5000), `lost`, `outstanding`, `reset()`, `as_rows()`; new `describe_rtt()` (`TD rtt: 8.0 ms (median 9.5) · 1 lost`, lost hidden at zero). Pings older than the timeout are dropped from pending into `lost`; pings evicted by the 32-outstanding cap count as lost too; a pong for an expired ping returns None. Expiry runs inside `ping()` / `on_pong()` on the one clock read each already made — no TD timer, and the contract fixture's two-tick clock script still holds. Non-finite clock readings never expire anything; a backwards clock only makes pings look younger.
+- `morphogen-v2/td/morphogen_sync_callbacks.py`: `morphogen_rtt` is written through one `_write_rtt()` helper (`last_ms`, `median_ms`, `samples`, `outstanding`, `lost`; `""` before the first pong) after every ping attempt and every matched pong; new `rtt_line()`; `_rtt.reset()` joins the pacer / tally reset on each fresh authed hello, so old-session pings are dropped silently rather than reported lost.
+- `tests/test_td_sync_commands.py`: 5 new tests (expiry boundary + late pong ignored, pong-side expiry and bad-clock fail-safe, overflow + reset, `describe_rtt` / rows, callbacks table + fresh-auth reset).
+- Docs: `docs/morphogen-redteam/TD-COMMANDS.md` troubleshooting rows for `lost` / `outstanding`; `morphogen-v2/README.md` TD lines; root README changelog (also backfilled a pointer for 10-25 → 10-27).
+- No wire-format or browser change; contract fixture untouched. TD pytest 62 pass (was 57); `npm test` 126 pass (unchanged).
+
+**Next focus candidates:** a TD → app status frame so the browser can show TD-side RTT / lost (fixture rows first), Field-panel feed / kill sliders, STE / soft-quant inside the codec `train_step`.
+
 ## 2026-10-27 (09:30 ET — daily commit)
 
 **Landed:** an architecture + operator note for the TD → app command channel, guarded by a drift test, so the six days of Sync work (10-21 → 10-26) read as one system instead of a long README sentence.

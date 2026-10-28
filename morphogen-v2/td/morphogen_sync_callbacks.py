@@ -26,6 +26,13 @@ SendStats (sent / paced out / no authed client) and, if present, written to a
 Text TOP. A ping that is paced out or has nobody to go to is no longer stamped
 into the RTT tracker (it used to be, so it sat in the pending list forever).
 Requires morphogen_sync_commands.py beside morphogen_sync_auth.py.
+
+Lost pings (2026-10-28): a ping with no pong within RttTracker.timeout_ms
+(5 s) is counted as lost. `morphogen_rtt` is now rewritten after every ping
+attempt as well as every matched pong, and gains `outstanding` / `lost` rows,
+so a dead link shows as a rising `lost` count instead of a frozen table.
+`rtt_line()` gives a one-liner for a Text TOP. The RTT tracker resets with
+the pacer and the send tally on each fresh authed hello.
 """
 
 from morphogen_sync_auth import ACCEPT, DROP, REPLY, SyncAuthGate  # noqa: E402
@@ -39,6 +46,7 @@ from morphogen_sync_commands import (  # noqa: E402
     RttTracker,
     SendStats,
     classify_inbound,
+    describe_rtt,
     describe_send_stats,
     make_preset_command,
 )
@@ -121,20 +129,33 @@ def send_preset(dat, preset_id, allow_unknown=False):
 
 
 def send_ping(dat):
-    """Ping authed clients; the matching pong updates `morphogen_rtt`."""
-    return _broadcast(dat, "ping", _rtt.ping)
+    """Ping authed clients; the matching pong updates `morphogen_rtt`.
+
+    The table is also rewritten after the attempt itself, because sending a
+    ping is when older unanswered pings get expired into the `lost` count.
+    """
+    sent = _broadcast(dat, "ping", _rtt.ping)
+    _write_rtt()
+    return sent
 
 
-def _record_pong(payload):
-    rtt = _rtt.on_pong(payload)
-    if rtt is None:
-        return
+def rtt_line():
+    """e.g. 'TD rtt: 8.0 ms (median 9.5) · 2 lost' — for a Text TOP beside send_stats_line()."""
+    return describe_rtt(_rtt)
+
+
+def _write_rtt():
     tdat = op("morphogen_rtt")  # noqa: F821 (TD builtin)
     if tdat is not None:
         tdat.clear()
-        tdat.appendRow(["last_ms", round(rtt, 2)])
-        tdat.appendRow(["median_ms", round(_rtt.median_ms, 2)])
-        tdat.appendRow(["samples", len(_rtt.samples)])
+        for row in _rtt.as_rows():
+            tdat.appendRow(row)
+
+
+def _record_pong(payload):
+    if _rtt.on_pong(payload) is None:
+        return  # forged / duplicate / expired pong: leave the table as it was
+    _write_rtt()
 
 
 def onConnect(dat, client):
@@ -164,7 +185,9 @@ def onReceiveText(dat, rowIndex, message, client):
     if action == REPLY and gate.is_authed(client):
         _pacer.reset()  # fresh authed session: browser refilled its gate too
         _stats.reset()  # ...and zeroed its command tally, so keep the two comparable
+        _rtt.reset()  # pings sent to the old session can't be answered on this one
         _write_send_stats()
+        _write_rtt()
     if action == DROP:
         gate.on_disconnect(client)
         if hasattr(dat, "disconnect"):
