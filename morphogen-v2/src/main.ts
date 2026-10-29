@@ -6,7 +6,7 @@ import { GrayScott, PRESET_MITOSIS } from './sim/grayScott';
 import { Canvas2DRenderer } from './render/canvas2d';
 import { HumEngine } from './audio/hum';
 import { TdClient, isSecurePage } from './sync/tdClient';
-import { describeCommandStats } from './sync/tdCommand';
+import { describeCommandStats, describeTdRtt } from './sync/tdCommand';
 import { loadSyncSettings } from './sync/syncUrl';
 import {
   mountMuteToggle,
@@ -206,6 +206,11 @@ function main(): void {
       td: td.snapshot(),
       // Per-session TD command tally: applied / pings / refused / paced.
       tdCommands: { ...td.commandStats(), line: describeCommandStats(td.commandStats()) },
+      // TD-side RTT from TD's latest status frame (null until it sends one).
+      tdRtt: (() => {
+        const r = td.tdRtt();
+        return r && { ...r, line: describeTdRtt(r) };
+      })(),
       sync: syncSettings,
     });
   }

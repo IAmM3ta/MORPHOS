@@ -17,6 +17,8 @@ sys.path.insert(0, TD_DIR)
 import morphogen_sync_callbacks as cb  # noqa: E402
 from morphogen_sync_commands import (  # noqa: E402
     MAX_COMMAND_BYTES,
+    MAX_STATUS_COUNT,
+    MAX_STATUS_MS,
     OTHER,
     PONG,
     PRESET_IDS,
@@ -29,6 +31,7 @@ from morphogen_sync_commands import (  # noqa: E402
     describe_send_stats,
     make_ping_command,
     make_preset_command,
+    make_status_command,
     normalize_preset_id,
 )
 
@@ -47,6 +50,9 @@ def test_limits_match_browser_constants():
     src = open(COMMAND_TS, encoding="utf-8").read()
     assert f"MAX_COMMAND_BYTES = {MAX_COMMAND_BYTES};" in src
     assert "MAX_PRESET_ID_LEN = 32;" in src
+    # Status frame bounds (2026-10-29): TS writes them with digit separators.
+    assert f"MAX_STATUS_MS = {MAX_STATUS_MS:_};" in src
+    assert f"MAX_STATUS_COUNT = {MAX_STATUS_COUNT:_};" in src
 
 
 def test_preset_command_normalises_and_validates():
@@ -202,7 +208,7 @@ def test_send_tally_separates_paced_from_no_client(td):
     for _ in range(6):  # burst of 5, then one paced out
         cb.send_preset(dat, "coral")
     assert (cb._stats.presets, cb._stats.paced, cb._stats.no_client) == (5, 1, 0)
-    assert tables["morphogen_cmds"].rows == [["presets", 5], ["pings", 0], ["paced", 1], ["no_client", 0]]
+    assert tables["morphogen_cmds"].rows == [["presets", 5], ["pings", 0], ["statuses", 0], ["paced", 1], ["no_client", 0]]
     assert cb.send_stats_line() == "TD sent: 5 presets · 1 paced"
     cb.onDisconnect(dat, "a")
     assert cb.send_preset(dat, "coral") == 0
@@ -308,3 +314,45 @@ def test_callbacks_surface_lost_pings_and_reset_on_fresh_auth(td):
     cb.onReceiveText(dat, 0, hello, "c")  # fresh authed session
     assert cb._rtt.lost == 0 and cb._rtt.outstanding == 0
     assert dict((k, v) for k, v in tables["morphogen_rtt"].rows)["lost"] == 0
+
+
+# --- RTT status frame (2026-10-29) --------------------------------------------
+
+
+def test_send_status_pushes_td_rtt_to_authed_clients(td):
+    dat, tables, now = td
+    assert cb.send_ping(dat) == 1
+    t = cb._rtt._pending[0]
+    now[0] += 8.0
+    cb.onReceiveText(dat, 0, json.dumps({"v": 1, "pong": "morphogen", "t": t}), "a")
+    dat.sent.clear()
+    assert cb.send_status(dat) == 1
+    client, text = dat.sent[-1]
+    assert client == "a"
+    frame = json.loads(text)
+    assert frame == {
+        "v": 1,
+        "cmd": "status",
+        "rtt": {"last_ms": 8.0, "median_ms": 8.0, "samples": 1, "outstanding": 0, "lost": 0},
+    }
+    assert cb._stats.statuses == 1
+    assert cb.send_stats_line() == "TD sent: 1 ping · 1 status"
+    assert ["statuses", 1] in tables["morphogen_cmds"].rows
+
+
+def test_send_status_paced_out_shares_the_command_budget(td):
+    dat, _, _ = td
+    for _ in range(5):
+        cb.send_preset(dat, "coral")
+    assert cb.send_status(dat) == 0
+    assert (cb._stats.statuses, cb._stats.paced) == (0, 1)
+
+
+def test_make_status_command_rounds_and_validates():
+    assert make_status_command(1.23456, None, 2, 0, 0) == (
+        '{"v":1,"cmd":"status","rtt":{"last_ms":1.23,"median_ms":null,"samples":2,"outstanding":0,"lost":0}}'
+    )
+    for bad in ({"last_ms": float("inf")}, {"samples": "3"}, {"lost": -2}, {"median_ms": False}):
+        with pytest.raises(ValueError):
+            make_status_command(**bad)
+    assert describe_send_stats(SendStats(statuses=2)) == "TD sent: 2 statuses"

@@ -2,6 +2,21 @@
 
 RedBot daily cadence notes for `IAmM3ta/MORPHOS`. Newest first.
 
+## 2026-10-29 (09:30 ET — daily commit)
+
+**Landed:** yesterday's first "next" item — a TD → app `status` frame, contract rows first, so the browser can hold TD-side RTT and lost-ping figures.
+
+- `morphogen-v2/tests/fixtures/td-commands.v1.json`: 3 new `built` status rows (including a null-before-first-pong frame and 2-decimal rounding), 7 `builder_rejects`, 7 `browser_refuses`, and a new `rtt_lines` table pinning the exact one-line text both sides print (with an exact-tie value, 8.25).
+- `morphogen-v2/td/morphogen_sync_commands.py`: `make_status_command()` (ms `None` or finite 0..`MAX_STATUS_MS`, rounded to 0.01; counts ints 0..`MAX_STATUS_COUNT`), `RttTracker.status_frame()`, `describe_rtt_fields()` (used by `describe_rtt`), `_fmt_ms` rounds ties up to match JS `toFixed(1)`; `SendStats` gains `statuses` (row + `1 status` / `N statuses`).
+- `morphogen-v2/td/morphogen_sync_callbacks.py`: `send_status(dat)` broadcasts through the same `_broadcast` / pacer path; the frame is built only if it will go.
+- `morphogen-v2/src/sync/tdCommand.ts`: `TdRtt` / `TdStatusCommand`, strict `parseTdRtt` (all five fields required, any bad field refuses the frame), `describeTdRtt`, `MAX_STATUS_MS` / `MAX_STATUS_COUNT`.
+- `morphogen-v2/src/sync/tdClient.ts`: status frames are gated and counted as `applied`, the latest is kept in `tdRtt()` (copy; cleared on every fresh ack). `src/main.ts`: `?debug=1` snapshot gains `tdRtt` with its line.
+- Tests: node `tdContract` (shared line), `tdCommand` (bounds, required fields), `tdClient` (per-session keep / refuse / reset), `tdCommandsDoc` (new Limits rows + doc example); pytest contract rows, line parity, tracker round-trip, `send_status` send / pacing / tally, builder validation, status-limit drift against the TS.
+- Docs: `TD-COMMANDS.md` file map, lifecycle diagram, accepted frame, Limits rows and a troubleshooting row; `morphogen-v2/README.md`; root README changelog.
+- Additive to wire v1 (older browsers count it as `refused`). `npm test` 130 pass (was 126); `tsc --noEmit` clean; no-WebGL check OK; TD pytest 81 pass (was 62).
+
+**Next focus candidates:** show `describeTdRtt` in the Sync panel beside the `#syncCmds` chip (live sessions only, warn tone when `lost` > 0), Field-panel feed / kill sliders, STE / soft-quant work inside the codec `train_step`.
+
 ## 2026-10-28 (09:20 ET — daily commit)
 
 **Landed:** one of yesterday's "next" items — unanswered TD pings now expire and are counted as lost, so a dead Sync link is visible on the TD side instead of looking like a frozen RTT table.

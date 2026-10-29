@@ -8,7 +8,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { parseTdCommand, pongFor, createCommandGate } from '../.test-build/tdCommand.mjs';
+import { parseTdCommand, pongFor, createCommandGate, describeTdRtt } from '../.test-build/tdCommand.mjs';
 
 const fixture = JSON.parse(readFileSync(new URL('./fixtures/td-commands.v1.json', import.meta.url), 'utf8'));
 
@@ -38,4 +38,12 @@ test('contract: rate gate verdicts match the shared clock script', () => {
   const gate = createCommandGate();
   const got = fixture.gate.clock_ms.map((t) => gate.allow(t));
   assert.deepEqual(got, fixture.gate.allow);
+});
+
+test('contract: describeTdRtt prints the same line as TD describe_rtt_fields (2026-10-29)', () => {
+  for (const row of fixture.rtt_lines.rows) {
+    const cmd = parseTdCommand(JSON.stringify({ v: 1, cmd: 'status', rtt: row.rtt }));
+    assert.ok(cmd && cmd.cmd === 'status', JSON.stringify(row.rtt));
+    assert.equal(describeTdRtt(cmd.rtt), row.line);
+  }
 });

@@ -244,3 +244,32 @@ test('commands: rate-limited, and a throwing handler does not break the session'
   assert.ok(ws.sent.length > 1, 'telemetry still pumping');
   td.disconnect();
 });
+
+test('status frames: latest TD rtt kept per session, junk refused, cleared on a fresh ack', () => {
+  const got = [];
+  const td = new TdClient(SECRET, { rand: () => 0, now: () => 0 });
+  td.onCommand = (c) => got.push(c.cmd);
+  td.connect(URL_OK, 'companion', payload);
+  let ws = last();
+  ws.serverOpen();
+  ws.serverSend({ v: 1, cmd: 'status', rtt: { last_ms: 5, median_ms: 5, samples: 1, outstanding: 0, lost: 0 } }); // pre-ack
+  assert.equal(td.tdRtt(), null);
+  ws.serverSend(ackOk);
+  ws.serverSend({ v: 1, cmd: 'status', rtt: { last_ms: 8, median_ms: 9.5, samples: 3, outstanding: 0, lost: 1 } });
+  ws.serverSend({ v: 1, cmd: 'status', rtt: { last_ms: -1, median_ms: null, samples: 0, outstanding: 0, lost: 0 } }); // refused
+  assert.deepEqual(td.tdRtt(), { lastMs: 8, medianMs: 9.5, samples: 3, outstanding: 0, lost: 1 });
+  const copy = td.tdRtt();
+  copy.lost = 99; // callers get a copy
+  assert.equal(td.tdRtt().lost, 1);
+  assert.deepEqual(got, ['status']);
+  const s = td.commandStats();
+  assert.equal(s.applied, 1);
+  assert.equal(s.refused, 1);
+  ws.serverDrop();
+  mock.timers.tick(RECONNECT_BASE_MS);
+  ws = last();
+  ws.serverOpen();
+  ws.serverSend(ackOk);
+  assert.equal(td.tdRtt(), null, 'new session starts without the old TD figures');
+  td.disconnect();
+});

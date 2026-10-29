@@ -8,6 +8,9 @@ import {
   parseTdCommand,
   pongFor,
   createCommandGate,
+  describeTdRtt,
+  MAX_STATUS_MS,
+  MAX_STATUS_COUNT,
   MAX_COMMAND_BYTES,
   MAX_PRESET_ID_LEN,
   COMMAND_BURST,
@@ -82,4 +85,20 @@ test('gate: backwards / NaN clocks never mint tokens; reset refills', () => {
   let ok = 0;
   for (let i = 0; i < 50; i++) if (d.allow(0)) ok++;
   assert.equal(ok, COMMAND_BURST);
+});
+
+test('status: bounds are inclusive, every field required, extra fields ignored (2026-10-29)', () => {
+  const frame = (rtt) => JSON.stringify({ v: 1, cmd: 'status', rtt });
+  const base = { last_ms: 0, median_ms: MAX_STATUS_MS, samples: 0, outstanding: MAX_STATUS_COUNT, lost: 0 };
+  assert.deepEqual(parseTdCommand(frame({ ...base, extra: 'x' })), {
+    cmd: 'status',
+    rtt: { lastMs: 0, medianMs: MAX_STATUS_MS, samples: 0, outstanding: MAX_STATUS_COUNT, lost: 0 },
+  });
+  assert.equal(parseTdCommand(frame({ ...base, median_ms: MAX_STATUS_MS + 1 })), null);
+  assert.equal(parseTdCommand(frame({ ...base, outstanding: MAX_STATUS_COUNT + 1 })), null);
+  for (const key of Object.keys(base)) {
+    const { [key]: _drop, ...rest } = base;
+    assert.equal(parseTdCommand(frame(rest)), null, `missing ${key}`);
+  }
+  assert.equal(describeTdRtt({ lastMs: 3, medianMs: null, samples: 1, outstanding: 0, lost: 0 }), 'TD rtt: 3.0 ms');
 });

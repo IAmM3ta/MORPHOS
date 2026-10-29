@@ -35,6 +35,19 @@ side: if TD says "3 presets" but the browser says "none yet", the frames are
 not reaching an authed session; if TD says "2 paced", the cue stack fired
 faster than the 10/s, burst-5 limit and TD held those frames back itself.
 
+RTT status frame (2026-10-29): TD's round-trip figures used to live only in
+TD (`morphogen_rtt`), so the browser operator could not see that TD was
+losing pings. `make_status_command()` / `RttTracker.status_frame()` build
+
+    TD      -> {"v": 1, "cmd": "status", "rtt": {"last_ms": 8.0, "median_ms": 9.5,
+                "samples": 3, "outstanding": 0, "lost": 1}}
+
+with the same field names as the `morphogen_rtt` rows. The browser parses it
+(parseTdCommand in tdCommand.ts) and renders it with describeTdRtt, which must
+print exactly what describe_rtt() prints here; the shared fixture pins both.
+Status frames go through CommandPacer like every other command, so send them
+at a slow cadence (about 1/s), never per frame.
+
 Contract (2026-10-23): morphogen-v2/tests/fixtures/td-commands.v1.json pins the
 exact frame bytes, refusals and pacer verdicts this module and the browser must
 agree on. Change the fixture first if a rule changes, then keep both
@@ -45,6 +58,7 @@ from __future__ import annotations
 
 import json
 import math
+from decimal import ROUND_HALF_UP, Decimal
 import re
 import time
 from dataclasses import dataclass, field
@@ -53,6 +67,10 @@ from typing import Any, Callable, Dict, List, Optional
 # --- keep in sync with morphogen-v2/src/sync/tdCommand.ts ------------------
 MAX_COMMAND_BYTES = 512
 MAX_PRESET_ID_LEN = 32
+# Status frame bounds (2026-10-29): RTT figures above an hour or counts above a
+# billion are junk, not measurements; both sides refuse them.
+MAX_STATUS_MS = 3_600_000
+MAX_STATUS_COUNT = 1_000_000_000
 COMMAND_RATE_PER_S = 10.0
 COMMAND_BURST = 5.0
 # --- keep in sync with PRESET_ORDER in morphogen-v2/src/ui/field.ts --------
@@ -109,6 +127,45 @@ def make_ping_command(t_ms: float) -> str:
     if isinstance(t_ms, bool) or not isinstance(t_ms, (int, float)) or not math.isfinite(t_ms):
         raise ValueError("ping t must be a finite number of ms")
     return _dump({"v": 1, "cmd": "ping", "t": t_ms})
+
+
+def _status_ms(name: str, v: Any) -> Optional[float]:
+    if v is None:
+        return None
+    if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v):
+        raise ValueError(f"status {name} must be a finite number of ms or None")
+    if v < 0 or v > MAX_STATUS_MS:
+        raise ValueError(f"status {name} out of range 0..{MAX_STATUS_MS}")
+    return round(float(v), 2)
+
+
+def _status_count(name: str, v: Any) -> int:
+    if isinstance(v, bool) or not isinstance(v, int) or v < 0 or v > MAX_STATUS_COUNT:
+        raise ValueError(f"status {name} must be an integer 0..{MAX_STATUS_COUNT}")
+    return v
+
+
+def make_status_command(
+    last_ms: Any = None,
+    median_ms: Any = None,
+    samples: Any = 0,
+    outstanding: Any = 0,
+    lost: Any = 0,
+) -> str:
+    """Serialize `{v:1, cmd:"status", rtt:{...}}` — TD's RTT figures for the browser.
+
+    ms values are None (no pong yet) or finite 0..MAX_STATUS_MS, rounded to
+    0.01 ms; counts are ints 0..MAX_STATUS_COUNT. Same field names and order as
+    RttTracker.as_rows(), so the browser line and the TD table read alike.
+    """
+    rtt = {
+        "last_ms": _status_ms("last_ms", last_ms),
+        "median_ms": _status_ms("median_ms", median_ms),
+        "samples": _status_count("samples", samples),
+        "outstanding": _status_count("outstanding", outstanding),
+        "lost": _status_count("lost", lost),
+    }
+    return _dump({"v": 1, "cmd": "status", "rtt": rtt})
 
 
 def classify_inbound(payload: Any) -> str:
@@ -261,6 +318,12 @@ class RttTracker:
         mid = len(s) // 2
         return s[mid] if len(s) % 2 else (s[mid - 1] + s[mid]) / 2.0
 
+    def status_frame(self) -> str:
+        """This tracker's figures as a browser status frame (see make_status_command)."""
+        return make_status_command(
+            self.last_ms, self.median_ms, len(self.samples), self.outstanding, self.lost
+        )
+
     def as_rows(self) -> List[list]:
         """Rows for the optional `morphogen_rtt` Table DAT ("" = no sample yet)."""
         last, med = self.last_ms, self.median_ms
@@ -273,16 +336,33 @@ class RttTracker:
         ]
 
 
+def _fmt_ms(v: float) -> str:
+    """One decimal, ties rounded up — the same digits as JS Number.toFixed(1).
+
+    Python's f"{v:.1f}" rounds an exact tie (8.25) to even ("8.2") while
+    toFixed gives "8.3"; Decimal(v) is the float's exact value, so HALF_UP on
+    it matches toFixed for every non-negative input.
+    """
+    return str(Decimal(v).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP))
+
+
+def describe_rtt_fields(last_ms: Optional[float], median_ms: Optional[float], lost: int) -> str:
+    """The describe_rtt line from raw fields; the browser's describeTdRtt twin."""
+    if last_ms is None:
+        head = "TD rtt: no pongs yet"
+    else:
+        head = f"TD rtt: {_fmt_ms(last_ms)} ms"
+        if median_ms is not None:
+            head += f" (median {_fmt_ms(median_ms)})"
+    return head + (f" · {lost} lost" if lost else "")
+
+
 def describe_rtt(tracker: "RttTracker") -> str:
     """One line for a Text TOP, e.g. 'TD rtt: 8.0 ms (median 9.5) · 1 lost'.
 
     Mirrors describe_send_stats(): the lost bucket is hidden while it is zero.
     """
-    if tracker.last_ms is None:
-        head = "TD rtt: no pongs yet"
-    else:
-        head = f"TD rtt: {tracker.last_ms:.1f} ms (median {tracker.median_ms:.1f})"
-    return head + (f" · {tracker.lost} lost" if tracker.lost else "")
+    return describe_rtt_fields(tracker.last_ms, tracker.median_ms, tracker.lost)
 
 
 # Outcomes SendStats.record() accepts (returned by the callbacks' _broadcast).
@@ -304,29 +384,33 @@ class SendStats:
 
     presets: int = 0
     pings: int = 0
+    statuses: int = 0
     paced: int = 0
     no_client: int = 0
 
     def record(self, kind: str, outcome: str) -> None:
-        """Count one send attempt. kind is "preset" or "ping"; unknown values are ignored."""
+        """Count one send attempt. kind is "preset", "ping" or "status"; unknown values are ignored."""
         if outcome == SENT:
             if kind == "preset":
                 self.presets += 1
             elif kind == "ping":
                 self.pings += 1
+            elif kind == "status":
+                self.statuses += 1
         elif outcome == PACED:
             self.paced += 1
         elif outcome == NO_CLIENT:
             self.no_client += 1
 
     def reset(self) -> None:
-        self.presets = self.pings = self.paced = self.no_client = 0
+        self.presets = self.pings = self.statuses = self.paced = self.no_client = 0
 
     def as_rows(self) -> List[List[Any]]:
         """Rows for an optional `morphogen_cmds` Table DAT (name, count)."""
         return [
             ["presets", self.presets],
             ["pings", self.pings],
+            ["statuses", self.statuses],
             ["paced", self.paced],
             ["no_client", self.no_client],
         ]
@@ -345,6 +429,7 @@ def describe_send_stats(s: SendStats) -> str:
 
     add(s.presets, "preset", "presets")
     add(s.pings, "ping", "pings")
+    add(s.statuses, "status", "statuses")
     add(s.paced, "paced", "paced")
     add(s.no_client, "with no authed client", "with no authed client")
     return "TD sent: " + (" · ".join(parts) if parts else "none yet")

@@ -13,6 +13,12 @@
  *   { v:1, cmd:"ping", t?:number }     → TdClient answers { v:1, pong:"morphogen", t }
  *                                         itself, so TD can measure round-trip latency.
  *
+ *   { v:1, cmd:"status", rtt:{ last_ms, median_ms, samples, outstanding, lost } }
+ *                                      → TD's own round-trip figures (2026-10-29).
+ *                                         TdClient keeps the latest one (tdRtt())
+ *                                         so the browser can show what only TD
+ *                                         could see before: lost pings.
+ *
  * Deliberately refused for now (parse → null): "setParams" and "freeze". They
  * are in the spec but need their own limits review before a remote peer can
  * drive kernel numbers or stop the sim; refusing them keeps the door shut
@@ -41,6 +47,10 @@
 export const MAX_COMMAND_BYTES = 512;
 /** Preset ids are short ASCII slugs; anything longer is junk. */
 export const MAX_PRESET_ID_LEN = 32;
+/** Status RTT values above an hour are junk, not measurements (TD: MAX_STATUS_MS). */
+export const MAX_STATUS_MS = 3_600_000;
+/** Status counters above a billion are junk too (TD: MAX_STATUS_COUNT). */
+export const MAX_STATUS_COUNT = 1_000_000_000;
 /** Sustained command rate the gate allows (per second). */
 export const COMMAND_RATE_PER_S = 10;
 /** Short burst allowance on top of the sustained rate (e.g. a TD cue stack firing at once). */
@@ -48,7 +58,19 @@ export const COMMAND_BURST = 5;
 
 export type TdPresetCommand = { cmd: 'preset'; id: string };
 export type TdPingCommand = { cmd: 'ping'; t: number | null };
-export type TdCommand = TdPresetCommand | TdPingCommand;
+/**
+ * TD-side round-trip figures, mirroring the `morphogen_rtt` table rows in TD.
+ * lastMs / medianMs are null until TD has matched its first pong.
+ */
+export type TdRtt = {
+  lastMs: number | null;
+  medianMs: number | null;
+  samples: number;
+  outstanding: number;
+  lost: number;
+};
+export type TdStatusCommand = { cmd: 'status'; rtt: TdRtt };
+export type TdCommand = TdPresetCommand | TdPingCommand | TdStatusCommand;
 
 /** What TdClient sends back for a ping. `t` echoes the ping's own clock (or null). */
 export type TdPong = { v: 1; pong: 'morphogen'; t: number | null };
@@ -82,8 +104,51 @@ export function parseTdCommand(raw: unknown): TdCommand | null {
     const t = typeof m.t === 'number' && Number.isFinite(m.t) ? m.t : null;
     return { cmd: 'ping', t };
   }
+  if (m.cmd === 'status') {
+    const rtt = parseTdRtt(m.rtt);
+    return rtt ? { cmd: 'status', rtt } : null;
+  }
   // 'setParams' / 'freeze' / unknown: reserved, not accepted yet.
   return null;
+}
+
+/**
+ * Shape-check a status frame's `rtt` object. Every field must be present: ms
+ * values null or finite 0..MAX_STATUS_MS, counts integers 0..MAX_STATUS_COUNT.
+ * Any bad field refuses the whole frame (a half-valid status would mislead).
+ */
+function parseTdRtt(raw: unknown): TdRtt | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const r = raw as Record<string, unknown>;
+  const ms = (v: unknown): number | null | undefined => {
+    if (v === null) return null;
+    return typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= MAX_STATUS_MS ? v : undefined;
+  };
+  const count = (v: unknown): number | undefined =>
+    typeof v === 'number' && Number.isInteger(v) && v >= 0 && v <= MAX_STATUS_COUNT ? v : undefined;
+  const lastMs = ms(r.last_ms);
+  const medianMs = ms(r.median_ms);
+  const samples = count(r.samples);
+  const outstanding = count(r.outstanding);
+  const lost = count(r.lost);
+  if (lastMs === undefined || medianMs === undefined) return null;
+  if (samples === undefined || outstanding === undefined || lost === undefined) return null;
+  return { lastMs, medianMs, samples, outstanding, lost };
+}
+
+/**
+ * One line for TD's RTT, e.g. "TD rtt: 8.0 ms (median 9.5) · 1 lost" — the
+ * exact text TD's describe_rtt() prints, so both screens read the same. The
+ * lost bucket is hidden while it is zero. (TD rounds exact ties up so its
+ * digits match Number.toFixed; the fixture's rtt_lines pin this.)
+ */
+export function describeTdRtt(rtt: TdRtt): string {
+  let head = 'TD rtt: no pongs yet';
+  if (rtt.lastMs !== null) {
+    head = `TD rtt: ${rtt.lastMs.toFixed(1)} ms`;
+    if (rtt.medianMs !== null) head += ` (median ${rtt.medianMs.toFixed(1)})`;
+  }
+  return rtt.lost > 0 ? `${head} · ${rtt.lost} lost` : head;
 }
 
 /** Reply frame for a ping. */
@@ -135,7 +200,7 @@ export function createCommandGate(
  *   refused       → parseTdCommand returned null (junk, reserved, oversized)
  *   paced         → well-formed but the rate gate said no
  *   pings         → answered in-client with a pong
- *   applied       → handed to onCommand (preset today)
+ *   applied       → handed to onCommand (preset, and status since 2026-10-29)
  * handlerErrors counts applied commands whose onCommand handler threw (it is
  * a subset of applied, not a separate bucket). lastAt is the client clock
  * (TdClientOptions.now) of the latest frame, or null before the first.

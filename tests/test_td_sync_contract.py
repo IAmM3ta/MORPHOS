@@ -21,7 +21,10 @@ from morphogen_sync_commands import (  # noqa: E402
     CommandPacer,
     RttTracker,
     classify_inbound,
+    describe_rtt,
+    describe_rtt_fields,
     make_ping_command,
+    make_status_command,
     make_preset_command,
 )
 
@@ -40,6 +43,9 @@ def _build(spec):
         if arg in ("NaN", "Infinity"):
             arg = float(arg)
         return make_ping_command(arg)
+    if kind == "status":
+        args = [float(a) if a in ("NaN", "Infinity") else a for a in arg]
+        return make_status_command(*args)
     raise AssertionError(f"unknown build kind {kind!r}")
 
 
@@ -72,3 +78,21 @@ def test_pacer_matches_browser_gate_script():
     pacer = CommandPacer(clock_ms=lambda: next(times))
     got = [pacer.allow() for _ in FIXTURE["gate"]["clock_ms"]]
     assert got == FIXTURE["gate"]["allow"]
+
+
+@pytest.mark.parametrize("row", FIXTURE["rtt_lines"]["rows"], ids=lambda r: r["line"])
+def test_describe_rtt_fields_matches_browser_line(row):
+    r = row["rtt"]
+    assert describe_rtt_fields(r["last_ms"], r["median_ms"], r["lost"]) == row["line"]
+
+
+def test_tracker_status_frame_round_trips_its_own_line():
+    clock = iter([1000.0, 1008.0])
+    tracker = RttTracker(clock_ms=lambda: next(clock))
+    tracker.ping()
+    tracker.on_pong(FIXTURE["pong"]["reply"])
+    frame = json.loads(tracker.status_frame())
+    assert frame["cmd"] == "status"
+    r = frame["rtt"]
+    assert describe_rtt_fields(r["last_ms"], r["median_ms"], r["lost"]) == describe_rtt(tracker)
+    assert r == {"last_ms": 8.0, "median_ms": 8.0, "samples": 1, "outstanding": 0, "lost": 0}

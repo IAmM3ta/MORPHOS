@@ -1,5 +1,5 @@
 {
-  "_comment": "Golden cross-language contract for the Morphogen v2 TD -> app control plane (v1). Read by BOTH tests/tdContract.test.mjs (browser parser + gate in src/sync/tdCommand.ts) and ../tests/test_td_sync_contract.py (TD builders + pacer in td/morphogen_sync_commands.py). If you change either side's rules, update this file and both suites must still pass. Added 2026-10-23.",
+  "_comment": "Golden cross-language contract for the Morphogen v2 TD -> app control plane (v1). Read by BOTH tests/tdContract.test.mjs (browser parser + gate in src/sync/tdCommand.ts) and ../tests/test_td_sync_contract.py (TD builders + pacer in td/morphogen_sync_commands.py). If you change either side's rules, update this file and both suites must still pass. Added 2026-10-23; status frame (TD rtt -> browser) rows added 2026-10-29.",
   "version": 1,
   "built": [
     { "build": ["preset", "coral"], "raw": "{\"v\":1,\"cmd\":\"preset\",\"id\":\"coral\"}", "parsed": { "cmd": "preset", "id": "coral" } },
@@ -7,7 +7,10 @@
     { "build": ["preset", "USKATE"], "raw": "{\"v\":1,\"cmd\":\"preset\",\"id\":\"uskate\"}", "parsed": { "cmd": "preset", "id": "uskate" } },
     { "build": ["preset_unknown", "nebula"], "raw": "{\"v\":1,\"cmd\":\"preset\",\"id\":\"nebula\"}", "parsed": { "cmd": "preset", "id": "nebula" } },
     { "build": ["ping", 1000], "raw": "{\"v\":1,\"cmd\":\"ping\",\"t\":1000}", "parsed": { "cmd": "ping", "t": 1000 } },
-    { "build": ["ping", 1234.5], "raw": "{\"v\":1,\"cmd\":\"ping\",\"t\":1234.5}", "parsed": { "cmd": "ping", "t": 1234.5 } }
+    { "build": ["ping", 1234.5], "raw": "{\"v\":1,\"cmd\":\"ping\",\"t\":1234.5}", "parsed": { "cmd": "ping", "t": 1234.5 } },
+    { "build": ["status", [8.0, 9.5, 3, 0, 1]], "raw": "{\"v\":1,\"cmd\":\"status\",\"rtt\":{\"last_ms\":8.0,\"median_ms\":9.5,\"samples\":3,\"outstanding\":0,\"lost\":1}}", "parsed": { "cmd": "status", "rtt": { "lastMs": 8, "medianMs": 9.5, "samples": 3, "outstanding": 0, "lost": 1 } } },
+    { "build": ["status", [null, null, 0, 2, 0]], "raw": "{\"v\":1,\"cmd\":\"status\",\"rtt\":{\"last_ms\":null,\"median_ms\":null,\"samples\":0,\"outstanding\":2,\"lost\":0}}", "parsed": { "cmd": "status", "rtt": { "lastMs": null, "medianMs": null, "samples": 0, "outstanding": 2, "lost": 0 } } },
+    { "build": ["status", [12.345, 8.25, 16, 1, 4]], "raw": "{\"v\":1,\"cmd\":\"status\",\"rtt\":{\"last_ms\":12.35,\"median_ms\":8.25,\"samples\":16,\"outstanding\":1,\"lost\":4}}", "parsed": { "cmd": "status", "rtt": { "lastMs": 12.35, "medianMs": 8.25, "samples": 16, "outstanding": 1, "lost": 4 } } }
   ],
   "builder_rejects": [
     ["preset", ""],
@@ -16,7 +19,14 @@
     ["preset", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
     ["ping", "NaN"],
     ["ping", "Infinity"],
-    ["ping", true]
+    ["ping", true],
+    ["status", [-1, null, 0, 0, 0]],
+    ["status", ["NaN", null, 0, 0, 0]],
+    ["status", [3600001, null, 0, 0, 0]],
+    ["status", [null, null, 1.5, 0, 0]],
+    ["status", [null, null, 0, -1, 0]],
+    ["status", [null, null, 0, 0, true]],
+    ["status", [null, null, 0, 0, 1000000001]]
   ],
   "browser_refuses": [
     "{\"v\":1,\"cmd\":\"setParams\",\"feed\":0.05}",
@@ -25,8 +35,25 @@
     "{\"cmd\":\"preset\",\"id\":\"coral\"}",
     "{\"v\":1,\"cmd\":\"preset\",\"id\":\"co ral\"}",
     "[1,2,3]",
-    "not json"
+    "not json",
+    "{\"v\":1,\"cmd\":\"status\"}",
+    "{\"v\":1,\"cmd\":\"status\",\"rtt\":[8,9.5,3,0,1]}",
+    "{\"v\":1,\"cmd\":\"status\",\"rtt\":{\"last_ms\":-1,\"median_ms\":null,\"samples\":0,\"outstanding\":0,\"lost\":0}}",
+    "{\"v\":1,\"cmd\":\"status\",\"rtt\":{\"last_ms\":3600001,\"median_ms\":null,\"samples\":0,\"outstanding\":0,\"lost\":0}}",
+    "{\"v\":1,\"cmd\":\"status\",\"rtt\":{\"last_ms\":\"8\",\"median_ms\":null,\"samples\":0,\"outstanding\":0,\"lost\":0}}",
+    "{\"v\":1,\"cmd\":\"status\",\"rtt\":{\"last_ms\":null,\"median_ms\":null,\"samples\":1.5,\"outstanding\":0,\"lost\":0}}",
+    "{\"v\":1,\"cmd\":\"status\",\"rtt\":{\"last_ms\":null,\"median_ms\":null,\"samples\":0,\"outstanding\":0}}"
   ],
+  "rtt_lines": {
+    "_comment": "Status rtt fields (snake_case, as sent) -> the exact line both describe_rtt_fields (TD) and describeTdRtt (browser) must print. 8.25 is an exact binary tie: TD rounds it up to match JS toFixed. Added 2026-10-29.",
+    "rows": [
+      { "rtt": { "last_ms": 8.0, "median_ms": 9.5, "samples": 3, "outstanding": 0, "lost": 1 }, "line": "TD rtt: 8.0 ms (median 9.5) · 1 lost" },
+      { "rtt": { "last_ms": null, "median_ms": null, "samples": 0, "outstanding": 2, "lost": 0 }, "line": "TD rtt: no pongs yet" },
+      { "rtt": { "last_ms": null, "median_ms": null, "samples": 0, "outstanding": 0, "lost": 3 }, "line": "TD rtt: no pongs yet · 3 lost" },
+      { "rtt": { "last_ms": 12.35, "median_ms": 8.25, "samples": 16, "outstanding": 1, "lost": 4 }, "line": "TD rtt: 12.3 ms (median 8.3) · 4 lost" },
+      { "rtt": { "last_ms": 0.05, "median_ms": 0.05, "samples": 1, "outstanding": 0, "lost": 0 }, "line": "TD rtt: 0.1 ms (median 0.1)" }
+    ]
+  },
   "pong": { "ping_raw": "{\"v\":1,\"cmd\":\"ping\",\"t\":1000}", "reply": { "v": 1, "pong": "morphogen", "t": 1000 } },
   "gate": {
     "_comment": "Clock readings in ms fed one-by-one to a fresh 10/s burst-5 bucket; allow[i] is the expected verdict. Covers the burst, refill at 100 ms/token, a backwards clock that must not mint tokens, and a long idle capped at the burst.",

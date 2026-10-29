@@ -139,6 +139,16 @@ def send_ping(dat):
     return sent
 
 
+def send_status(dat):
+    """Push TD's RTT figures to authed browsers (2026-10-29), e.g. from a 1 s Timer CHOP.
+
+    The browser shows them next to its own command tally. The frame is built
+    only if it will go, and it uses the same pacer budget as presets / pings,
+    so keep the cadence slow (about once a second) to leave room for cues.
+    """
+    return _broadcast(dat, "status", _rtt.status_frame)
+
+
 def rtt_line():
     """e.g. 'TD rtt: 8.0 ms (median 9.5) · 2 lost' — for a Text TOP beside send_stats_line()."""
     return describe_rtt(_rtt)

@@ -34,9 +34,10 @@ import {
   emptyCommandStats,
   type TdCommand,
   type TdCommandStats,
+  type TdRtt,
 } from './tdCommand';
 
-export type { TdCommand, TdCommandStats } from './tdCommand';
+export type { TdCommand, TdCommandStats, TdRtt } from './tdCommand';
 
 export type SyncPath = 'companion' | 'midi' | 'wss';
 
@@ -324,6 +325,8 @@ export class TdClient {
    * connection-state view the Sync chip renders.
    */
   private stats: TdCommandStats = emptyCommandStats();
+  /** Latest TD status RTT this session (2026-10-29); null until TD sends one. */
+  private lastTdRtt: TdRtt | null = null;
   /** Clock for the command gate (injectable via TdClientOptions.now for tests). */
   private readonly now: () => number;
 
@@ -442,6 +445,7 @@ export class TdClient {
       this.reconnectAttempt = 0; // healthy again: next drop starts from the base delay
       this.commandGate.reset(); // fresh session, fresh command budget
       this.stats = emptyCommandStats(); // …and a fresh tally
+      this.lastTdRtt = null; // an old session's TD figures don't describe this one
       this.onStatus?.(this.status, null);
       this.timer = setInterval(() => {
         if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
@@ -475,6 +479,7 @@ export class TdClient {
       return;
     }
     this.stats.applied += 1;
+    if (cmd.cmd === 'status') this.lastTdRtt = { ...cmd.rtt }; // kept even if the handler throws
     try {
       this.onCommand?.(cmd);
     } catch {
@@ -549,6 +554,14 @@ export class TdClient {
       maxReconnectAttempts: this.maxReconnectAttempts,
       nextRetryAt: this.nextRetryAt,
     };
+  }
+
+  /**
+   * Copy of the latest TD-side RTT figures from a `status` frame this authed
+   * session (feed to describeTdRtt), or null if TD hasn't sent one since the ack.
+   */
+  tdRtt(): TdRtt | null {
+    return this.lastTdRtt ? { ...this.lastTdRtt } : null;
   }
 
   /** Copy of this session's TD command tally (feed to describeCommandStats). */

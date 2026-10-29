@@ -10,12 +10,12 @@ is the map. `tests/tdCommandsDoc.test.mjs` fails if the numbers below drift from
 
 | Side | File | Role |
 | --- | --- | --- |
-| Browser | `morphogen-v2/src/sync/tdCommand.ts` | The only parser for inbound TD frames (`parseTdCommand`), the rate gate (`createCommandGate`), the pong shape (`pongFor`) and the tally line (`describeCommandStats`). Pure, no DOM. |
-| Browser | `morphogen-v2/src/sync/tdClient.ts` | `handleCommand` routes each authed frame through parse → gate → ping/apply and counts it in `commandStats()`. |
+| Browser | `morphogen-v2/src/sync/tdCommand.ts` | The only parser for inbound TD frames (`parseTdCommand`), the rate gate (`createCommandGate`), the pong shape (`pongFor`), the tally line (`describeCommandStats`) and the TD RTT line (`describeTdRtt`). Pure, no DOM. |
+| Browser | `morphogen-v2/src/sync/tdClient.ts` | `handleCommand` routes each authed frame through parse → gate → ping/apply and counts it in `commandStats()`; keeps the latest TD `status` RTT in `tdRtt()` (cleared on every fresh ack). |
 | Browser | `morphogen-v2/src/ui/panels.ts` | `mountSyncCommandLine` shows the tally as the `#syncCmds` chip while the session is authed. |
-| TD | `morphogen-v2/td/morphogen_sync_commands.py` | Frame builders (`make_preset_command`, `make_ping_command`), `CommandPacer` (same bucket as the browser), `RttTracker` (RTT samples, 5 s lost-ping expiry, `describe_rtt`), `SendStats` / `describe_send_stats`. |
-| TD | `morphogen-v2/td/morphogen_sync_callbacks.py` | `send_preset(dat, id)` / `send_ping(dat)` broadcast to **authed clients only**; pongs and lost / outstanding pings go to `morphogen_rtt` (`rtt_line()` prints one line), send tallies to `morphogen_cmds`, `send_stats_line()` prints one line. |
-| Both | `morphogen-v2/tests/fixtures/td-commands.v1.json` | Golden contract: exact frame bytes, refusals, pong shape and gate verdicts. Read by the node suite and by pytest. |
+| TD | `morphogen-v2/td/morphogen_sync_commands.py` | Frame builders (`make_preset_command`, `make_ping_command`, `make_status_command` / `RttTracker.status_frame()`), `CommandPacer` (same bucket as the browser), `RttTracker` (RTT samples, 5 s lost-ping expiry, `describe_rtt`), `SendStats` / `describe_send_stats`. |
+| TD | `morphogen-v2/td/morphogen_sync_callbacks.py` | `send_preset(dat, id)` / `send_ping(dat)` / `send_status(dat)` broadcast to **authed clients only**; pongs and lost / outstanding pings go to `morphogen_rtt` (`rtt_line()` prints one line), send tallies to `morphogen_cmds`, `send_stats_line()` prints one line. |
+| Both | `morphogen-v2/tests/fixtures/td-commands.v1.json` | Golden contract: exact frame bytes, refusals, pong shape, gate verdicts and the shared RTT line (`rtt_lines`). Read by the node suite and by pytest. |
 
 ## Lifecycle
 
@@ -31,6 +31,8 @@ sequenceDiagram
   T->>B: {v:1, cmd:"ping", t:1000}
   B-->>T: {v:1, pong:"morphogen", t:1000}
   Note over T: RttTracker updates morphogen_rtt
+  T->>B: {v:1, cmd:"status", rtt:{last_ms, median_ms, samples, outstanding, lost}}
+  Note over B: tdRtt() keeps the latest, describeTdRtt prints it
 ```
 
 Nothing is parsed as a command before the ack. A fresh ack (reconnect, new
@@ -46,6 +48,16 @@ Accepted (v1):
   no-op in `createPresetCycler().set`.
 - `{"v":1,"cmd":"ping","t":1000}` is answered by TdClient itself with
   `{"v":1,"pong":"morphogen","t":1000}`. A missing or non-finite `t` echoes as `null`.
+- `{"v":1,"cmd":"status","rtt":{"last_ms":8.0,"median_ms":9.5,"samples":3,"outstanding":0,"lost":1}}`
+  (added 2026-10-29) carries TD's own round-trip figures, the same fields as
+  the `morphogen_rtt` table, so the browser can see lost pings that only TD
+  can detect. Every field is required; ms values are `null` (no pong yet) or
+  0 to `MAX_STATUS_MS`, counts are integers 0 to `MAX_STATUS_COUNT`, and one bad
+  field refuses the whole frame. The browser keeps the latest one per session
+  (`tdRtt()`, and `tdRtt` in the `?debug=1` snapshot) and `describeTdRtt` prints
+  the same line TD's `rtt_line()` does. It counts as `applied` and spends a gate
+  token, so send it from a slow timer (about once a second). Adding it was not
+  wire-breaking: an older browser simply counts it as `refused`.
 
 Refused (parse returns `null`, frame dropped, session untouched):
 `setParams` and `freeze` (reserved until they get their own limits review),
@@ -60,6 +72,8 @@ and anything over the size cap.
 | Max preset id length | 32 chars | `MAX_PRESET_ID_LEN` |
 | Sustained command rate | 10 per second | `COMMAND_RATE_PER_S` |
 | Burst | 5 frames | `COMMAND_BURST` |
+| Max status RTT value | 3600000 ms | `MAX_STATUS_MS` |
+| Max status counter | 1000000000 | `MAX_STATUS_COUNT` |
 
 The gate is a token bucket. A backwards or non-finite clock refills nothing, so
 a bad timestamp can only make it stricter. Refused frames are counted **before**
@@ -81,6 +95,7 @@ session, `applied + pings + refused + paced === frames` on the browser side.
 | Browser `refused` grows | TD sent frames this build doesn't accept (reserved command, newer `v`, bad id). | TD script version vs. this contract; the fixture's `browser_refuses` list. |
 | Browser `handler errors` > 0 | The preset handler threw; telemetry kept flowing. | Browser console, `main.ts` preset routing. |
 | `morphogen_rtt` `lost` grows (or `rtt_line()` ends in `· N lost`) | Pings got no pong within 5 s (`RttTracker.timeout_ms`), or were pushed out by the 32-outstanding cap. Late pongs are ignored. | Network, the browser tab being backgrounded or frozen, reconnect count in the Sync chip. |
+| Browser `tdRtt` line ends in `· N lost` but TD's `rtt_line()` looks fine | The browser shows TD's figures as of the last `status` frame, so it lags by up to one status interval. | Whether `send_status` is still being called; `TD sent:` should show a climbing `statuses` count. |
 | `outstanding` stays above 0 but `lost` stays 0 | Pings in flight younger than the timeout; expiry is checked on the next ping or pong, not on a timer. | Send another ping, or wait for the next cue. |
 
 ## Changing the contract

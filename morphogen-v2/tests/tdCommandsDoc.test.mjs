@@ -13,6 +13,8 @@ import {
   MAX_PRESET_ID_LEN,
   COMMAND_RATE_PER_S,
   COMMAND_BURST,
+  MAX_STATUS_MS,
+  MAX_STATUS_COUNT,
   parseTdCommand,
   pongFor,
 } from '../.test-build/tdCommand.mjs';
@@ -35,6 +37,8 @@ test('Limits table matches tdCommand.ts constants', () => {
   assert.equal(limitRow('MAX_PRESET_ID_LEN'), MAX_PRESET_ID_LEN);
   assert.equal(limitRow('COMMAND_RATE_PER_S'), COMMAND_RATE_PER_S);
   assert.equal(limitRow('COMMAND_BURST'), COMMAND_BURST);
+  assert.equal(limitRow('MAX_STATUS_MS'), MAX_STATUS_MS);
+  assert.equal(limitRow('MAX_STATUS_COUNT'), MAX_STATUS_COUNT);
 });
 
 test('accepted example frames parse, and the ping example pong matches the doc', () => {
@@ -47,6 +51,14 @@ test('accepted example frames parse, and the ping example pong matches the doc',
   const pong = JSON.stringify(pongFor(ping));
   assert.ok(doc.includes(`\`${pong}\``), `doc shows the real pong ${pong}`);
   assert.deepEqual(pongFor(ping), fixture.pong.reply);
+});
+
+test('status example in the doc parses to the fixture row (2026-10-29)', () => {
+  const raw = '{"v":1,"cmd":"status","rtt":{"last_ms":8.0,"median_ms":9.5,"samples":3,"outstanding":0,"lost":1}}';
+  assert.ok(doc.includes(`\`${raw}\``), 'doc shows the status frame');
+  const row = fixture.built.find((r) => r.raw === raw);
+  assert.ok(row, 'fixture has the same status frame');
+  assert.deepEqual(parseTdCommand(raw), row.parsed);
 });
 
 test('reserved commands named in the doc are refused', () => {
