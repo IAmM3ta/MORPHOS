@@ -13,6 +13,7 @@ import {
   mountPanelStubs,
   mountSyncStatus,
   mountSyncCommandLine,
+  mountSyncRttLine,
   nextLockCount,
   resetNeedsConfirm,
   LOOP_MAX,
@@ -133,6 +134,9 @@ function main(): void {
   // TD -> app command tally next to the chip, visible only while live (2026-10-26).
   const syncCmdsEl = document.querySelector<HTMLElement>('#syncCmds');
   const unmountSyncCmds = syncCmdsEl ? mountSyncCommandLine(syncCmdsEl, td) : () => {};
+  // TD-side RTT / lost pings from TD's status frames, same visibility rules (2026-10-30).
+  const syncRttEl = document.querySelector<HTMLElement>('#syncRtt');
+  const unmountSyncRtt = syncRttEl ? mountSyncRttLine(syncRttEl, td) : () => {};
 
   // Sound mute: label + aria-pressed mirror HumEngine; safe before ENTER.
   const toggleMute = mountMuteToggle(qs<HTMLElement>('#muteHum'), hum);
@@ -221,6 +225,7 @@ function main(): void {
     unmountPointer();
     unmountPanels();
     td.disconnect();
+    unmountSyncRtt();
     unmountSyncCmds();
     unmountSync();
     hum.dispose();

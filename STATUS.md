@@ -2,6 +2,19 @@
 
 RedBot daily cadence notes for `IAmM3ta/MORPHOS`. Newest first.
 
+## 2026-10-30 (09:30 ET — daily commit)
+
+**Landed:** yesterday's first "next" item — TD's RTT / lost-ping figures are now on screen in the Sync panel, not only in `?debug=1`.
+
+- `morphogen-v2/src/ui/panels.ts`: new `mountSyncRttLine(el, td)` + `SYNC_RTT_TICK_MS` (1 s) and a structural `SyncRttSource` type. Shows `describeTdRtt(td.tdRtt())` only while the session is `open` and TD has sent a `status` frame since the ack (`tdRtt()` is cleared on every fresh ack, so a reconnect stays hidden until TD reports again). The tick runs only while live (so the chip appears within a second of TD's first `send_status`), the DOM is written only on change, and `data-tone="warn"` when `lost` > 0. Chains / restores `onStatus` like the other Sync mounts.
+- `morphogen-v2/index.html`: `#syncRtt` chip (hidden by default) after `#syncCmds`, same chip tone styles.
+- `morphogen-v2/src/main.ts`: mounted after the cmds chip, unmounted first on teardown (LIFO).
+- `morphogen-v2/tests/syncRtt.test.mjs` (new, 5 tests): hidden until authed + first status frame; shared text incl. the 8.25 tie and warn on lost; a refused status frame changes nothing; no idle renders, no rewrite of unchanged text, hidden after drop and after re-ack with no new frame; stacks with `mountSyncCommandLine` and unmounts back to the original handler.
+- Docs: `TD-COMMANDS.md` file map + a troubleshooting row for "chip never appears"; `morphogen-v2/README.md`; root README changelog.
+- No wire-format change; fixture untouched. `npm test` 135 pass (was 130); `tsc --noEmit` clean; no-WebGL check OK; TD pytest 81 pass (unchanged). Note: a bare `pytest` at repo root still hits 2 pre-existing collection errors in the codec tests' environment; the TD suites are run by file.
+
+**Next focus candidates:** a TD-side timer helper that calls `send_status` at ~1 Hz only while a client is authed, Field-panel feed / kill sliders, STE / soft-quant work inside the codec `train_step`.
+
 ## 2026-10-29 (09:30 ET — daily commit)
 
 **Landed:** yesterday's first "next" item — a TD → app `status` frame, contract rows first, so the browser can hold TD-side RTT and lost-ping figures.

@@ -4,7 +4,7 @@
  * pure helpers so tests/panels.test.mjs can cover them without a DOM.
  */
 import { describeTdStatus, type TdSnapshot, type TdStatus } from '../sync/tdClient';
-import { describeCommandStats, type TdCommandStats } from '../sync/tdCommand';
+import { describeCommandStats, describeTdRtt, type TdCommandStats, type TdRtt } from '../sync/tdCommand';
 
 export type PanelId = 'field' | 'image' | 'body' | 'sound' | 'sync';
 
@@ -268,6 +268,86 @@ export function mountSyncCommandLine(
     }
     el.dataset.tone = s.refused > 0 || s.paced > 0 || s.handlerErrors > 0 ? 'warn' : 'ok';
     if (!tick) tick = setInterval(render, Number.isFinite(tickMs) && tickMs > 0 ? tickMs : SYNC_CMDS_TICK_MS);
+  };
+  const prev = td.onStatus;
+  td.onStatus = (s, err) => {
+    prev?.(s, err);
+    render();
+  };
+  render();
+  return () => {
+    stopTick();
+    td.onStatus = prev;
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Sync TD RTT line (2026-10-30)
+// ---------------------------------------------------------------------------
+
+/** What the TD RTT line needs from a TdClient (structural, so tests can fake it). */
+export type SyncRttSource = {
+  snapshot(): TdSnapshot;
+  tdRtt(): TdRtt | null;
+  onStatus?: (s: TdStatus, err?: string | null) => void;
+};
+
+/** Refresh rate for the TD RTT line while live; TD sends status frames at its own (paced) rate, so 1 Hz is plenty. */
+export const SYNC_RTT_TICK_MS = 1000;
+
+/**
+ * Mount the "TD rtt: 8.0 ms (median 9.5) · 1 lost" line next to the TD cmds chip.
+ *
+ * Since 2026-10-29 TD can push its own round-trip figures as a `status` frame
+ * and TdClient keeps the latest in tdRtt(), but they were only visible through
+ * the ?debug=1 console hook. This chip shows describeTdRtt's text, which is
+ * byte-for-byte what TD's rtt_line() prints, so the browser and TD screens read
+ * the same during a show:
+ *
+ *   - shown only while the session is 'open' (authed) AND TD has sent a status
+ *     frame since the ack; tdRtt() is cleared on every fresh ack, so a dropped
+ *     or reconnected session never shows the previous session's figures;
+ *   - refreshed on every status change and, only while open, on a slow
+ *     SYNC_RTT_TICK_MS interval (no timer at all when Sync is off);
+ *   - the DOM is written only when the text actually changes;
+ *   - tone "warn" when TD reports any lost pings (the link dropped or stalled
+ *     at some point this session), "ok" otherwise.
+ *
+ * Text comes from five numbers TD sent, already range-checked by parseTdRtt;
+ * nothing else from the frame (and never the auth token) reaches the DOM.
+ * Chains any existing onStatus handler and returns an unmount that restores it,
+ * so it stacks with mountSyncStatus / mountSyncCommandLine (unmount LIFO).
+ */
+export function mountSyncRttLine(
+  el: HTMLElement,
+  td: SyncRttSource,
+  tickMs: number = SYNC_RTT_TICK_MS,
+): () => void {
+  let tick: ReturnType<typeof setInterval> | null = null;
+  let lastText: string | null = null;
+  const stopTick = () => {
+    if (tick) clearInterval(tick);
+    tick = null;
+  };
+  const render = () => {
+    const live = td.snapshot().status === 'open';
+    if (!live) {
+      el.hidden = true;
+      stopTick();
+      return;
+    }
+    // Keep ticking while live even before the first status frame, so the chip
+    // appears within one tick of TD's first send_status().
+    if (!tick) tick = setInterval(render, Number.isFinite(tickMs) && tickMs > 0 ? tickMs : SYNC_RTT_TICK_MS);
+    const rtt = td.tdRtt();
+    el.hidden = rtt === null;
+    if (!rtt) return;
+    const text = describeTdRtt(rtt);
+    if (text !== lastText) {
+      el.textContent = text;
+      lastText = text;
+    }
+    el.dataset.tone = rtt.lost > 0 ? 'warn' : 'ok';
   };
   const prev = td.onStatus;
   td.onStatus = (s, err) => {
