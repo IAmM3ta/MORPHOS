@@ -365,6 +365,60 @@ def describe_rtt(tracker: "RttTracker") -> str:
     return describe_rtt_fields(tracker.last_ms, tracker.median_ms, tracker.lost)
 
 
+# How often status_tick() pushes a status frame (2026-10-31). 1 s keeps the
+# browser's #syncRtt chip fresh while spending 1 of the 10/s pacer tokens; the
+# floor stops a typo (e.g. 10 instead of 1000) from starving presets / pings.
+STATUS_INTERVAL_MS = 1000.0
+MIN_STATUS_INTERVAL_MS = 250.0
+
+
+@dataclass
+class StatusHeartbeat:
+    """Decide when the next periodic status frame is due (pure, no TD timer).
+
+    TD calls the callbacks' status_tick() as often as it likes (every frame
+    from an Execute DAT, or each pulse of a Timer CHOP); due() answers True at
+    most once per interval_ms so the cadence does not depend on how often it
+    is called. Rules, chosen to fail quiet rather than flood the pacer:
+
+    - The first due() after construction / reset() is True, so a freshly
+      authed browser gets TD's figures on the next tick, not a second later.
+    - A non-finite clock reading is never due (no sends on a broken clock).
+    - A clock that steps backwards re-arms from the new reading instead of
+      waiting for the old timestamp to come round again.
+    - interval_ms below MIN_STATUS_INTERVAL_MS (or not a finite number) falls
+      back: too small clamps to the floor, junk uses STATUS_INTERVAL_MS.
+    """
+
+    interval_ms: float = STATUS_INTERVAL_MS
+    clock_ms: Callable[[], float] = field(default=lambda: time.time() * 1000.0)
+    _last: Optional[float] = field(default=None, init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        v = self.interval_ms
+        if not (isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)):
+            self.interval_ms = STATUS_INTERVAL_MS
+        else:
+            self.interval_ms = max(MIN_STATUS_INTERVAL_MS, float(v))
+
+    def reset(self) -> None:
+        """Make the next due() True — call on each fresh authed hello."""
+        self._last = None
+
+    def due(self) -> bool:
+        """True if a status frame should go now; stamps the time when it says so."""
+        now = self.clock_ms()
+        if not (isinstance(now, (int, float)) and not isinstance(now, bool) and math.isfinite(now)):
+            return False
+        now = float(now)
+        if self._last is None or now - self._last >= self.interval_ms:
+            self._last = now
+            return True
+        if now < self._last:
+            self._last = now  # clock stepped back: restart the interval from here
+        return False
+
+
 # Outcomes SendStats.record() accepts (returned by the callbacks' _broadcast).
 SENT = "sent"
 PACED = "paced"

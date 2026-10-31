@@ -2,6 +2,18 @@
 
 RedBot daily cadence notes for `IAmM3ta/MORPHOS`. Newest first.
 
+## 2026-10-31 (09:15 ET — daily commit)
+
+**Landed:** yesterday's first "next" item — a TD-side heartbeat that keeps `status` frames flowing at ~1 Hz only while a browser is authed, so the `#syncRtt` chip works without hand-wiring a Timer CHOP.
+
+- `morphogen-v2/td/morphogen_sync_commands.py`: `StatusHeartbeat` (pure, injectable clock) + `STATUS_INTERVAL_MS` (1000) / `MIN_STATUS_INTERVAL_MS` (250). `due()` is true on the first call and after `reset()`, then at most once per interval; a non-finite clock is never due; a backwards clock re-arms from the new reading; junk intervals fall back to 1 s and tiny ones clamp to the floor.
+- `morphogen-v2/td/morphogen_sync_callbacks.py`: `status_tick(dat)` — call every frame. Checks for an authed client before consulting the heartbeat (so the interval isn't spent while nobody listens and the first tick after auth goes at once), then calls `send_status`. Idle ticks aren't tallied. `_heartbeat.reset()` joins the pacer / tally / RTT reset on each fresh authed hello. Docstring section added.
+- `tests/test_td_sync_commands.py`: 5 new tests (interval and reset, bad clock / backwards clock / interval validation, every-frame ticking with idle skip, immediate send after fresh auth, paced-out status waits a full interval). The `td` fixture now injects a clocked heartbeat.
+- Docs: `TD-COMMANDS.md` file map + two troubleshooting rows now point to `status_tick`; `morphogen-v2/README.md`; root README changelog.
+- No wire-format or browser change; fixture untouched. TD pytest 86 pass (was 81); `npm test` 135 pass (unchanged).
+
+**Next focus candidates:** Field-panel feed / kill sliders, STE / soft-quant work inside the codec `train_step`, fix the 2 pre-existing collection errors a bare root `pytest` hits.
+
 ## 2026-10-30 (09:30 ET — daily commit)
 
 **Landed:** yesterday's first "next" item — TD's RTT / lost-ping figures are now on screen in the Sync panel, not only in `?debug=1`.

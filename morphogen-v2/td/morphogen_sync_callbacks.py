@@ -33,6 +33,15 @@ attempt as well as every matched pong, and gains `outstanding` / `lost` rows,
 so a dead link shows as a rising `lost` count instead of a frozen table.
 `rtt_line()` gives a one-liner for a Text TOP. The RTT tracker resets with
 the pacer and the send tally on each fresh authed hello.
+
+Status heartbeat (2026-10-31): instead of wiring send_status() to a Timer
+CHOP and getting the cadence right by hand, call `status_tick(dat)` as often
+as you like (e.g. every frame from an Execute DAT's onFrameStart). It sends a
+status frame at most once per StatusHeartbeat.interval_ms (1 s), only while a
+browser is authed, and the first tick after a fresh authed hello sends right
+away so the browser's #syncRtt chip appears without a one-second wait. Ticks
+with nobody authed are not tallied, so an idle show does not pile up
+`no_client` counts in `morphogen_cmds`.
 """
 
 from morphogen_sync_auth import ACCEPT, DROP, REPLY, SyncAuthGate  # noqa: E402
@@ -45,6 +54,7 @@ from morphogen_sync_commands import (  # noqa: E402
     CommandPacer,
     RttTracker,
     SendStats,
+    StatusHeartbeat,
     classify_inbound,
     describe_rtt,
     describe_send_stats,
@@ -55,6 +65,7 @@ _gate = None
 _pacer = CommandPacer()
 _rtt = RttTracker()
 _stats = SendStats()
+_heartbeat = StatusHeartbeat()
 
 
 def _get_gate(dat):
@@ -149,6 +160,23 @@ def send_status(dat):
     return _broadcast(dat, "status", _rtt.status_frame)
 
 
+def status_tick(dat):
+    """Periodic status push; safe to call every frame (2026-10-31).
+
+    Returns what send_status() returned (clients reached), or 0 when it did
+    not try. The authed-client check comes before the heartbeat so the
+    interval is not used up while nobody is listening: the first tick after a
+    browser authenticates still goes immediately. A tick that is paced out
+    counts as `paced` like any other send and the next try is one interval
+    later, so a busy cue stack is never fought for tokens every frame.
+    """
+    if not _authed_clients(dat):
+        return 0
+    if not _heartbeat.due():
+        return 0
+    return send_status(dat)
+
+
 def rtt_line():
     """e.g. 'TD rtt: 8.0 ms (median 9.5) · 2 lost' — for a Text TOP beside send_stats_line()."""
     return describe_rtt(_rtt)
@@ -196,6 +224,7 @@ def onReceiveText(dat, rowIndex, message, client):
         _pacer.reset()  # fresh authed session: browser refilled its gate too
         _stats.reset()  # ...and zeroed its command tally, so keep the two comparable
         _rtt.reset()  # pings sent to the old session can't be answered on this one
+        _heartbeat.reset()  # next status_tick() sends at once, so #syncRtt shows promptly
         _write_send_stats()
         _write_rtt()
     if action == DROP:

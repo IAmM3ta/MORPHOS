@@ -25,7 +25,10 @@ from morphogen_sync_commands import (  # noqa: E402
     TELEMETRY,
     CommandPacer,
     RttTracker,
+    MIN_STATUS_INTERVAL_MS,
+    STATUS_INTERVAL_MS,
     SendStats,
+    StatusHeartbeat,
     classify_inbound,
     describe_rtt,
     describe_send_stats,
@@ -151,6 +154,7 @@ def td(monkeypatch):
     monkeypatch.setattr(cb, "_pacer", CommandPacer(clock_ms=lambda: now[0]))
     monkeypatch.setattr(cb, "_rtt", RttTracker(clock_ms=lambda: now[0]))
     monkeypatch.setattr(cb, "_stats", SendStats())
+    monkeypatch.setattr(cb, "_heartbeat", StatusHeartbeat(clock_ms=lambda: now[0]))
     dat = FakeWsDat()
     cb.onConnect(dat, "a")
     cb.onConnect(dat, "b")  # never authenticates
@@ -356,3 +360,79 @@ def test_make_status_command_rounds_and_validates():
         with pytest.raises(ValueError):
             make_status_command(**bad)
     assert describe_send_stats(SendStats(statuses=2)) == "TD sent: 2 statuses"
+
+
+# --- status heartbeat (2026-10-31) --------------------------------------------
+
+
+def test_heartbeat_first_due_then_once_per_interval():
+    now = [1000.0]
+    hb = StatusHeartbeat(clock_ms=lambda: now[0])
+    assert hb.interval_ms == STATUS_INTERVAL_MS
+    assert hb.due() is True  # first tick goes at once
+    now[0] += 999.0
+    assert hb.due() is False
+    now[0] += 1.0
+    assert hb.due() is True  # exactly one interval later
+    assert hb.due() is False  # same instant, already stamped
+    hb.reset()
+    assert hb.due() is True  # reset re-arms immediately
+
+
+def test_heartbeat_bad_clock_and_interval_fail_quiet():
+    now = [float("nan")]
+    hb = StatusHeartbeat(clock_ms=lambda: now[0])
+    assert hb.due() is False  # never sends on a broken clock
+    now[0] = 5000.0
+    assert hb.due() is True
+    now[0] = 1000.0  # clock stepped back 4 s
+    assert hb.due() is False
+    now[0] = 2000.0  # one interval after the new reading, not after 5000
+    assert hb.due() is True
+    assert StatusHeartbeat(interval_ms=10).interval_ms == MIN_STATUS_INTERVAL_MS
+    for junk in (float("inf"), "1000", True, None):
+        assert StatusHeartbeat(interval_ms=junk).interval_ms == STATUS_INTERVAL_MS
+
+
+def test_status_tick_paces_itself_and_skips_idle(td):
+    dat, tables, now = td
+    assert cb.status_tick(dat) == 1  # first tick after auth goes immediately
+    assert json.loads(dat.sent[-1][1])["cmd"] == "status"
+    for _ in range(30):  # e.g. every frame for half a second at 60 fps
+        now[0] += 16.0
+        assert cb.status_tick(dat) == 0
+    now[0] += 600.0
+    assert cb.status_tick(dat) == 1
+    assert cb._stats.statuses == 2 and cb._stats.paced == 0
+    cb.onDisconnect(dat, "a")
+    now[0] += 5000.0
+    assert cb.status_tick(dat) == 0
+    assert cb._stats.no_client == 0  # idle ticks are not tallied
+    assert ["no_client", 0] in tables["morphogen_cmds"].rows
+
+
+def test_status_tick_sends_at_once_after_fresh_auth(td):
+    dat, _, now = td
+    assert cb.status_tick(dat) == 1
+    now[0] += 100.0
+    assert cb.status_tick(dat) == 0
+    hello = json.dumps({"v": 1, "hello": "morphogen", "t": now[0], "auth": "correct-horse-battery-staple"})
+    cb.onConnect(dat, "c")
+    cb.onReceiveText(dat, 0, hello, "c")  # fresh authed session resets the heartbeat
+    dat.sent.clear()
+    assert cb.status_tick(dat) >= 1
+    assert all(json.loads(t)["cmd"] == "status" for _, t in dat.sent)
+    assert cb._stats.statuses == 1  # tally was reset with the session, then counted this one
+
+
+def test_status_tick_paced_out_waits_a_full_interval(td):
+    dat, _, now = td
+    for _ in range(5):
+        cb.send_preset(dat, "coral")  # spend the whole burst
+    assert cb.status_tick(dat) == 0
+    assert cb._stats.paced == 1
+    now[0] += 50.0  # pacer has refilled half a token; heartbeat isn't due anyway
+    assert cb.status_tick(dat) == 0
+    assert cb._stats.paced == 1  # no retry every frame
+    now[0] += 1000.0
+    assert cb.status_tick(dat) == 1
