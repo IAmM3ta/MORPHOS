@@ -1,8 +1,13 @@
 """Tests for bottleneck_train_sketch — no Stable Diffusion weights."""
 
-import torch
+import pytest
 
-from bottleneck_train_sketch import (
+# bottleneck_train_sketch and generative_codec import torch at module level.
+# Skip (not error) when torch is missing so a bare root `pytest` stays green
+# on a TD-only environment; the skip reason says how to get the full suite.
+torch = pytest.importorskip("torch", reason="train sketch tests need torch (pip install -r requirements.txt)")
+
+from bottleneck_train_sketch import (  # noqa: E402
     MockLatentBatch,
     categorical_rate_penalty_bpp,
     combined_loss,
@@ -15,7 +20,7 @@ from bottleneck_train_sketch import (
     run_sketch_epochs,
     train_step,
 )
-from generative_codec import (
+from generative_codec import (  # noqa: E402
     CategoricalEntropyModel,
     FactorizedEntropyModel,
     GenerativeCompressionCodec,

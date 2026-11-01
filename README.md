@@ -54,8 +54,10 @@ GPU (`cuda`) is strongly preferred. CPU falls back to FP32 and will be slow. Fir
 
 ```bash
 pip install pytest torch torchvision Pillow requests
-PYTHONPATH=. pytest tests/ -q
+pytest -q          # from the repo root; pytest.ini sets testpaths + pythonpath
 ```
+
+A bare `pytest` works without torch too: the codec suites (`test_shapes.py`, `test_train_sketch.py`) are reported as **skipped** with an install hint, and the TouchDesigner / Sync suites still run. Add `-rs` to see the skip reasons.
 
 ### Bottleneck train sketch (no model download)
 
@@ -72,7 +74,7 @@ PYTHONPATH=. python bottleneck_train_sketch.py --steps 8 --ans-hyper-hier --hype
 PYTHONPATH=. python bottleneck_train_sketch.py --steps 8 --hyper-rate --hyper-dim 16
 PYTHONPATH=. python bottleneck_train_sketch.py --steps 8 --hyper-rate --learned-hyper-prior --hyper-dim 16
 PYTHONPATH=. python bottleneck_train_sketch.py --steps 8 --hyper-rate --learned-hyper-prior --ans-hyper-hier-prior --hyper-dim 16
-PYTHONPATH=. pytest tests/test_train_sketch.py -q
+pytest tests/test_train_sketch.py -q
 ```
 
 See [docs/TRAINING-SKETCH.md](./docs/TRAINING-SKETCH.md) for the frozen-prior training plan and [docs/ENTROPY-CODING-NOTES.md](./docs/ENTROPY-CODING-NOTES.md) for the rate ladder beyond FP32.
@@ -110,6 +112,7 @@ MORPHOS under RedBot ops. Daily commits refine architecture, docs, and eval harn
 
 ### Changelog
 
+- **2026-11-01 (09:15 ET)** — Root test run fixed: a bare `pytest` at the repo root used to stop with "Interrupted: 2 errors during collection" on any machine without torch, because the two codec suites imported torch at module level, so the TD / Sync suites had to be run file by file. `tests/test_shapes.py` and `tests/test_train_sketch.py` now call `pytest.importorskip("torch")` (plus Pillow for the shape tests) and show up as skipped with a `pip install -r requirements.txt` hint. New root `pytest.ini` scopes collection to `tests/` and puts the repo root on the path, so the `PYTHONPATH=.` prefix is no longer needed. New stdlib-only `tests/test_suite_layout.py` (4 cases) fails if the config disappears or a hard torch import comes back above the skip. Bare root `pytest`: 90 pass, 2 skipped (was: interrupted); `npm test` 135 pass; [STATUS.md](STATUS.md).
 - **2026-10-31 (09:15 ET)** — Morphogen v2 TD status heartbeat: yesterday's `#syncRtt` chip only lights up if TD keeps calling `send_status`, and getting that cadence right by hand (a Timer CHOP wired to a callback) was the remaining setup step. New `StatusHeartbeat` in `morphogen_sync_commands.py` decides when the next status frame is due (first call true, then at most once per 1 s, 250 ms floor, never on a non-finite clock, re-arms if the clock steps back), and new `status_tick(dat)` in `morphogen_sync_callbacks.py` is safe to call every frame: it skips when no browser is authed (so an idle show doesn't fill `morphogen_cmds` with `no_client`), sends immediately after each fresh authed hello (the heartbeat resets with the pacer, tally and RTT tracker), and a paced-out status waits a full interval instead of retrying every frame. 5 new pytest cases; no wire or browser change. TD pytest 86 pass (was 81), `npm test` 135 pass; [TD-COMMANDS.md](docs/morphogen-redteam/TD-COMMANDS.md), [STATUS.md](STATUS.md).
 - **2026-10-30 (09:30 ET)** — Morphogen v2 TD round trip on screen: since yesterday the browser held TD's RTT and lost-ping figures from TD's `status` frames, but you could only see them in the `?debug=1` console hook, so a performer watching the browser still could not tell that TD was losing pings. New `mountSyncRttLine` (`morphogen-v2/src/ui/panels.ts`) puts `describeTdRtt`'s text in a `#syncRtt` chip next to the TD cmds chip, using the same visibility rules: shown only while the session is authed **and** TD has sent a status frame since this session's ack (so a reconnect never shows the old session's numbers), refreshed once a second only while live, DOM written only when the text changes, amber whenever `lost` > 0. The text is byte-for-byte TD's `rtt_line()`. Wired in `main.ts` with LIFO unmount. New `tests/syncRtt.test.mjs` (5 tests: visibility, warn tone with the shared tie-rounding case, refused frames leave the chip alone, no idle timer and no stale figures across a reconnect, stacking with the cmds chip). No wire change; `npm test` 135 pass (was 130), TD pytest 81 pass; [TD-COMMANDS.md](docs/morphogen-redteam/TD-COMMANDS.md), [STATUS.md](STATUS.md).
 - **2026-10-29 (09:30 ET)** — Morphogen v2 TD → app status frame: TD's round-trip figures (including the lost-ping count added yesterday) lived only in TouchDesigner's `morphogen_rtt` table, so someone watching the browser could not tell that TD was losing pings. TD can now push them with `send_status(dat)` as `{"v":1,"cmd":"status","rtt":{"last_ms":8.0,"median_ms":9.5,"samples":3,"outstanding":0,"lost":1}}` (built by `make_status_command` / `RttTracker.status_frame()`, paced like every other command, tallied as `statuses`). The browser parses it strictly (every field required, ms `null` or 0 to 1 h, counts whole numbers up to a billion, one bad field refuses the frame), keeps the latest per session in `TdClient.tdRtt()` (cleared on every fresh ack) and exposes it as `tdRtt` in the `?debug=1` snapshot. `describeTdRtt` prints exactly TD's `rtt_line()` text; TD now rounds exact ties up so its digits match JavaScript's `toFixed`. Contract rows came first: the shared fixture gained status frames, rejects, refusals and an `rtt_lines` table that both the node and pytest suites check. Additive, so an older browser just counts the frame as refused. `npm test` 130 pass (was 126), TD pytest 81 pass (was 62); [TD-COMMANDS.md](docs/morphogen-redteam/TD-COMMANDS.md), [STATUS.md](STATUS.md).

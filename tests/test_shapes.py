@@ -2,9 +2,18 @@
 
 import math
 
-import torch
-import torch.nn as nn
-from PIL import Image
+import pytest
+
+# The codec and its mocks need torch + Pillow. On a box that only has the
+# light TD / Sync deps installed (no torch), skip this whole module with a
+# clear reason instead of erroring at collection, so a bare `pytest` at the
+# repo root still runs every suite it *can* run. See pytest.ini and
+# tests/test_suite_layout.py, which guards this pattern.
+torch = pytest.importorskip("torch", reason="codec shape tests need torch (pip install -r requirements.txt)")
+pytest.importorskip("PIL", reason="codec shape tests need Pillow (pip install -r requirements.txt)")
+
+import torch.nn as nn  # noqa: E402
+from PIL import Image  # noqa: E402
 
 
 def test_preprocess_for_vae_shape():

@@ -2,6 +2,19 @@
 
 RedBot daily cadence notes for `IAmM3ta/MORPHOS`. Newest first.
 
+## 2026-11-01 (09:15 ET — daily commit)
+
+**Landed:** the third "next" item from 10-31 — a bare `pytest` at the repo root now runs cleanly instead of being interrupted by 2 collection errors.
+
+- Cause: `tests/test_shapes.py` and `tests/test_train_sketch.py` did `import torch` at module level, so on a box without torch (TD-only setups, this CI box) collection failed and pytest refused to run anything, hiding the TD suites.
+- `tests/test_shapes.py` / `tests/test_train_sketch.py`: `torch = pytest.importorskip("torch", reason=...)` before any torch-dependent import (shape tests also skip on missing Pillow); comments explain why. Test bodies unchanged.
+- `pytest.ini` (new): `testpaths = tests`, `pythonpath = .` — no more `PYTHONPATH=.` prefix, and `morphogen-v2/node_modules` is never crawled.
+- `tests/test_suite_layout.py` (new, 4 cases, stdlib only): root config present and scoped; each torch suite skips before importing torch / the codec modules; the torch-free suites don't import torch at top level.
+- README "Shape-only tests" and train-sketch commands updated; changelog entry.
+- No runtime code change. Bare root `pytest`: 90 pass, 2 skipped (TD suites 86 + 4 new layout cases). `npm test` 135 pass (unchanged). Torch suites not exercised here (no torch on the box); their bodies are untouched.
+
+**Next focus candidates:** Field-panel feed / kill sliders, STE / soft-quant work inside the codec `train_step`, a lightweight CI workflow that runs root `pytest` + `npm test` on push.
+
 ## 2026-10-31 (09:15 ET — daily commit)
 
 **Landed:** yesterday's first "next" item — a TD-side heartbeat that keeps `status` frames flowing at ~1 Hz only while a browser is authed, so the `#syncRtt` chip works without hand-wiring a Timer CHOP.
