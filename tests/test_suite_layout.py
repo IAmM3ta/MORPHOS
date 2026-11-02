@@ -60,3 +60,45 @@ def test_torch_free_suites_do_not_import_torch_at_top_level():
         top = [ln for ln in _code_lines(_read(name)) if not ln.startswith((" ", "\t"))]
         bad = [ln for ln in top if re.match(r"(import torch\b|from torch\b)", ln)]
         assert not bad, f"{name} is meant to run without torch but imports it: {bad}"
+
+
+# --- CI workflow guard (added 2026-11-02) -----------------------------------
+# .github/workflows/ci.yml runs the root pytest without torch and the
+# Morphogen v2 npm checks. These cases keep the workflow honest: if someone
+# drops a step, or starts installing requirements.txt (which would pull torch
+# and turn a seconds-long job into a multi-GB download), this fails locally
+# before the push. Plain text checks so the suite stays stdlib-only (no PyYAML).
+
+CI_PATH = os.path.join(ROOT, ".github", "workflows", "ci.yml")
+
+
+def _ci():
+    assert os.path.isfile(CI_PATH), ".github/workflows/ci.yml missing"
+    with open(CI_PATH, encoding="utf-8") as fh:
+        return "\n".join(_code_lines(fh.read()))
+
+
+def test_ci_runs_root_pytest_without_torch():
+    ci = _ci()
+    assert re.search(r"run:\s*pytest\b", ci), "CI must run a bare root pytest"
+    assert "requirements.txt" not in ci, "CI python job should not install requirements.txt (pulls torch)"
+    assert not re.search(r"pip install[^\n]*\btorch", ci), "CI python job should stay torch-free"
+
+
+@pytest.mark.parametrize(
+    "step",
+    ["npm ci", "npm test", "tsc --noEmit", "npm run check:nowebgl"],
+)
+def test_ci_runs_morphogen_checks(step):
+    ci = _ci()
+    assert step in ci, f"CI node job is missing `{step}`"
+    assert "working-directory: morphogen-v2" in ci
+
+
+def test_ci_npm_scripts_it_calls_exist():
+    import json
+
+    with open(os.path.join(ROOT, "morphogen-v2", "package.json"), encoding="utf-8") as fh:
+        scripts = json.load(fh)["scripts"]
+    for name in ("test", "check:nowebgl"):
+        assert name in scripts, f"package.json lost the `{name}` script CI calls"

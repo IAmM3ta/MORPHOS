@@ -1,0 +1,68 @@
+# MORPHOS CI (added 2026-11-02).
+#
+# Runs the same two commands RedBot's daily cadence runs by hand, on every push
+# and pull request, so a red suite shows up on GitHub instead of only in
+# STATUS.md:
+#
+#   python job -> bare `pytest` at the repo root (pytest.ini scopes it to tests/).
+#                 Deliberately installs ONLY pytest: no torch, no diffusers, no
+#                 weight download. The torch codec suites report as skipped
+#                 (pytest.importorskip), the TouchDesigner / Sync suites and the
+#                 stdlib layout guards run for real. That keeps CI fast (~seconds)
+#                 and proves the "works without torch" promise from 2026-11-01.
+#   node job   -> Morphogen v2: `npm ci`, `npm test` (esbuild bundle + node --test),
+#                 `tsc --noEmit`, and the no-WebGL guard (`npm run check:nowebgl`,
+#                 which needs ripgrep on the runner).
+#
+# tests/test_suite_layout.py checks this file still runs those commands, so
+# editing it out of sync with the suites fails locally too.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python:
+    name: pytest (root, torch-free)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install pytest only (torch suites skip by design)
+        run: python -m pip install --upgrade pip pytest
+      - name: Root pytest
+        run: pytest -q -rs
+
+  node:
+    name: morphogen-v2 (npm test, tsc, no-WebGL)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: morphogen-v2
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: morphogen-v2/package-lock.json
+      - name: Install ripgrep (used by check:nowebgl)
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq ripgrep
+      - run: npm ci
+      - run: npm test
+      - run: npx tsc --noEmit
+      - run: npm run check:nowebgl

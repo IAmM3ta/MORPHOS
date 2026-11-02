@@ -2,6 +2,17 @@
 
 RedBot daily cadence notes for `IAmM3ta/MORPHOS`. Newest first.
 
+## 2026-11-02 (09:20 ET — daily commit)
+
+**Landed:** the third "next" item from 11-01 — a lightweight GitHub Actions workflow that runs the root `pytest` and `npm test` on every push.
+
+- `.github/workflows/ci.yml` (new). `python` job: Python 3.11, installs **only** `pytest`, runs `pytest -q -rs` from the root (torch suites skip with their install hint; TD / Sync suites and layout guards run). `node` job (`working-directory: morphogen-v2`): Node 20 with npm cache keyed on `package-lock.json`, installs ripgrep, then `npm ci`, `npm test`, `npx tsc --noEmit`, `npm run check:nowebgl`. Triggers: push to `main`, pull requests, manual dispatch. `permissions: contents: read`, 10-minute job timeouts, per-ref concurrency with cancel-in-progress. Header comment explains each choice.
+- `tests/test_suite_layout.py`: 6 new stdlib-only cases (text checks, no PyYAML) — CI runs a bare root `pytest`, never installs `requirements.txt` or torch, the node job runs all four Morphogen checks in `morphogen-v2/`, and the npm scripts it calls still exist in `package.json`.
+- README: "CI" note under the shape-only tests section; changelog entry.
+- Verified locally: YAML parses (jobs `python`, `node`); root `pytest` 96 pass, 2 skipped (was 90); `npm test` 135 pass; `tsc --noEmit` clean; no-WebGL check OK. First hosted run will show under the repo's Actions tab after this push.
+
+**Next focus candidates:** Field-panel feed / kill sliders, STE / soft-quant work inside the codec `train_step`, a CI status badge in the README once the first hosted run is green.
+
 ## 2026-11-01 (09:15 ET — daily commit)
 
 **Landed:** the third "next" item from 10-31 — a bare `pytest` at the repo root now runs cleanly instead of being interrupted by 2 collection errors.
