@@ -2,6 +2,17 @@
 
 RedBot daily cadence notes for `IAmM3ta/MORPHOS`. Newest first.
 
+## 2026-11-03 (09:25 ET — daily commit)
+
+**Landed:** the "CI badge" item from 11-02 (first hosted run 41460505892 went green), plus a local runner so a red CI run can be reproduced with one command.
+
+- README: CI status badge for `main` at the top; the CI note now points at the badge and at the local runner.
+- `scripts/ci_local.sh` (new, executable): runs the workflow's steps — bare root `pytest -q -rs`, then in `morphogen-v2/` `npm ci`, `npm test`, `npx tsc --noEmit`, `npm run check:nowebgl`. Modes `all` (default), `python`, `node`; `PYTEST=` picks a venv's pytest; fails early if `rg` is missing; installs nothing into the caller's Python. Header comment explains each choice.
+- `tests/test_suite_layout.py`: 6 new stdlib-only cases — the script keeps its shebang, `+x` bit and `set -euo pipefail`; every node step the workflow runs is in the script (and vice versa via the shared step list); the pytest invocation matches CI's flags; no `pip install` in the script.
+- Verified by running `scripts/ci_local.sh` itself: root `pytest` 102 pass, 2 skipped (was 96); `npm test` 135 pass; `tsc --noEmit` clean; no-WebGL check OK. No runtime code change.
+
+**Next focus candidates:** Field-panel feed / kill sliders, STE / soft-quant work inside the codec `train_step`, run `ci_local.sh` in the daily cadence instead of the separate commands.
+
 ## 2026-11-02 (09:20 ET — daily commit)
 
 **Landed:** the third "next" item from 11-01 — a lightweight GitHub Actions workflow that runs the root `pytest` and `npm test` on every push.

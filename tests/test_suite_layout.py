@@ -102,3 +102,42 @@ def test_ci_npm_scripts_it_calls_exist():
         scripts = json.load(fh)["scripts"]
     for name in ("test", "check:nowebgl"):
         assert name in scripts, f"package.json lost the `{name}` script CI calls"
+
+
+# --- scripts/ci_local.sh mirrors the workflow (added 2026-11-03) ------------
+#
+# The local runner is only useful if "green locally" still means "green on
+# GitHub". These checks fail if a CI step is added to or dropped from one file
+# but not the other.
+
+CI_LOCAL_PATH = os.path.join(ROOT, "scripts", "ci_local.sh")
+CI_STEPS = ("npm ci", "npm test", "tsc --noEmit", "npm run check:nowebgl")
+
+
+def _ci_local():
+    assert os.path.isfile(CI_LOCAL_PATH), "scripts/ci_local.sh missing"
+    with open(CI_LOCAL_PATH, encoding="utf-8") as fh:
+        return "\n".join(_code_lines(fh.read()))
+
+
+def test_ci_local_is_executable_bash_with_strict_mode():
+    with open(CI_LOCAL_PATH, encoding="utf-8") as fh:
+        first = fh.readline().strip()
+    assert first == "#!/usr/bin/env bash"
+    assert os.access(CI_LOCAL_PATH, os.X_OK), "scripts/ci_local.sh lost its +x bit"
+    assert "set -euo pipefail" in _ci_local()
+
+
+@pytest.mark.parametrize("step", CI_STEPS)
+def test_ci_local_runs_every_node_step_ci_runs(step):
+    assert step in _ci(), f"workflow no longer runs `{step}`; update CI_STEPS"
+    assert step in _ci_local(), f"scripts/ci_local.sh is missing CI step `{step}`"
+
+
+def test_ci_local_runs_same_pytest_invocation_as_ci():
+    m = re.search(r"run:\s*(pytest[^\n]*)", _ci())
+    assert m, "CI must run a bare root pytest"
+    args = m.group(1).split()[1:]  # e.g. ["-q", "-rs"]
+    assert '"$PYTEST" ' + " ".join(args) in _ci_local()
+    assert "morphogen-v2" in _ci_local()
+    assert not re.search(r"pip install", _ci_local()), "ci_local.sh must not install into the caller's Python"
