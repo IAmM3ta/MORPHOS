@@ -2,6 +2,18 @@
 
 RedBot daily cadence notes for `IAmM3ta/MORPHOS`. Newest first.
 
+## 2026-11-04 (09:30 ET — daily commit)
+
+**Landed:** the "Field-panel feed / kill sliders" item that has sat at the top of the next-focus list since 10-31.
+
+- `morphogen-v2/src/ui/fieldTune.ts` (new, DOM-free apart from a tiny `SliderLike` interface): `TUNE_RANGE` (feed 0.01–0.09, kill 0.045–0.07; inside `PARAM_LIMITS`, covers every preset), `TUNE_STEP` 0.0001, `parseTuneValue` (snap + clamp, junk → null), `formatTuneValue`, `describeTune` (status text with a `(tuned)` marker, NaN-safe) and `mountFieldSliders` (sets bounds, applies `{feed}` / `{kill}` partial patches, reverts the slider on junk or a throwing apply, `sync()` after preset changes, `unmount()`). Header comment explains why du / dv are deliberately not exposed.
+- `src/main.ts`: sliders apply through `sim.setParams`; preset button, `]` / `[` and TD `preset` commands call `sliders.sync(sim.params)`; teardown unmounts them. The sliders are optional in the DOM, so an older `index.html` still boots.
+- `index.html`: `#feedSlider` / `#killSlider` range inputs with labels, titles and `aria-label`s, plus small `.tune` styles.
+- `package.json`: `fieldTune` added to the esbuild test bundle. `tests/fieldTune.test.mjs`: 7 cases (range vs limits / presets, snapping and round-trips, junk rejection, status text, apply / revert / sync / unmount with fake sliders).
+- Verified with the CI steps: `npm test` 142 pass (was 135); `tsc --noEmit` clean; no-WebGL check OK; root `pytest` 102 pass, 2 skipped (unchanged). Not yet tried in a real browser this run.
+
+**Next focus candidates:** let TD drive the sliders via the reserved `setParams` command (needs its own limits review), STE / soft-quant work inside the codec `train_step`, a quick in-browser pass on the slider layout in `?perform=1`.
+
 ## 2026-11-03 (09:25 ET — daily commit)
 
 **Landed:** the "CI badge" item from 11-02 (first hosted run 41460505892 went green), plus a local runner so a red CI run can be reproduced with one command.

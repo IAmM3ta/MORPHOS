@@ -61,6 +61,9 @@
       .sync-chip[data-tone="ok"] { border-color: #2f8f5b; color: #9fe3bd; }
       .sync-chip[data-tone="warn"] { border-color: #a1782f; color: #f0cf8f; }
       .sync-chip[data-tone="error"] { border-color: #a13d3d; color: #f1a3a3; }
+      /* Field feed / kill sliders (src/ui/fieldTune.ts) */
+      .tune { display: inline-flex; align-items: center; gap: 0.35rem; font-size: 0.75rem; opacity: 0.85; }
+      .tune input[type="range"] { width: 7rem; accent-color: #4d6d9a; }
       body.perform header .tag.dev, body.perform #panels .dev-only { display: none; }
     </style>
   </head>
@@ -85,6 +88,8 @@
       </div>
       <div id="panels">
         <button type="button" data-panel="field" aria-keyshortcuts="] [" title="Next field preset (]) · Shift-click or [ for previous">Field</button>
+        <label class="tune" title="Gray–Scott feed rate F (resets when a preset is picked)">feed <input type="range" id="feedSlider" aria-label="Field feed rate" /></label>
+        <label class="tune" title="Gray–Scott kill rate k (resets when a preset is picked)">kill <input type="range" id="killSlider" aria-label="Field kill rate" /></label>
         <button type="button" data-panel="image">Image</button>
         <button type="button" data-panel="body">Body</button>
         <button type="button" data-panel="sound">Sound</button>

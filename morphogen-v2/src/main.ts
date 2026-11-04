@@ -23,6 +23,8 @@ import { mountKeyboardShortcuts } from './ui/keys';
 import { mountPointerSeeding } from './ui/pointer';
 import { createHudWriter } from './ui/hud';
 import { createPresetCycler, describePreset, presetFromQuery, presetStepDir } from './ui/field';
+import { describeTune, mountFieldSliders } from './ui/fieldTune';
+import { PRESETS } from './sim/grayScott';
 import { createFrameLoop, singleFlightUnlock } from './app/loop';
 
 const SIM_SIZE = 256;
@@ -77,6 +79,26 @@ function main(): void {
   const setStatus = (s: string) => {
     status.textContent = s;
   };
+
+  // Feed / kill sliders (2026-11-04): fine-tune between presets. Each move is
+  // a partial sim.setParams ({feed} or {kill}), so sanitizeParams still guards
+  // the kernel and du / dv stay on the preset. Optional in the DOM: an older
+  // index.html without #feedSlider / #killSlider just runs without them.
+  const feedEl = document.querySelector<HTMLInputElement>('#feedSlider');
+  const killEl = document.querySelector<HTMLInputElement>('#killSlider');
+  const sliders =
+    feedEl && killEl
+      ? mountFieldSliders(
+          { feed: feedEl, kill: killEl },
+          {
+            initial: sim.params,
+            apply: (patch) => {
+              sim.setParams(patch);
+              setStatus(describeTune(PRESETS[field.current()].name, sim.params));
+            },
+          },
+        )
+      : null;
 
   // Sim pacing is fixed at SIM_HZ (120 steps/s, the old 2-per-frame look at
   // 60 Hz) whatever the display rate, capped at MAX_STEPS_PER_FRAME so a slow
@@ -149,6 +171,7 @@ function main(): void {
   // (click / Shift-click) and the `]` / `[` keys so the status text is identical.
   const stepPreset = (dir: 1 | -1) => {
     setStatus(describePreset(field.next(dir)));
+    sliders?.sync(sim.params); // a preset discards any slider tuning
   };
   // TD → app commands (authed sessions only; parsed + rate-limited in
   // sync/tdCommand.ts). `preset` goes through the same cycler as the Field
@@ -157,7 +180,10 @@ function main(): void {
     if (cmd.cmd !== 'preset') return;
     const before = field.current();
     const now = field.set(cmd.id);
-    if (now !== before) setStatus(`${describePreset(now)} · from TD`);
+    if (now !== before) {
+      setStatus(`${describePreset(now)} · from TD`);
+      sliders?.sync(sim.params);
+    }
   };
   const lockLoop = () => {
     lockCount = nextLockCount(lockCount);
@@ -222,6 +248,7 @@ function main(): void {
   const teardown = () => {
     loop.stop();
     unmountKeys();
+    sliders?.unmount();
     unmountPointer();
     unmountPanels();
     td.disconnect();
