@@ -1,6 +1,7 @@
 {
-  "_comment": "Golden cross-language contract for the Morphogen v2 TD -> app control plane (v1). Read by BOTH tests/tdContract.test.mjs (browser parser + gate in src/sync/tdCommand.ts) and ../tests/test_td_sync_contract.py (TD builders + pacer in td/morphogen_sync_commands.py). If you change either side's rules, update this file and both suites must still pass. Added 2026-10-23; status frame (TD rtt -> browser) rows added 2026-10-29.",
+  "_comment": "Golden cross-language contract for the Morphogen v2 TD -> app control plane (v1). Read by BOTH tests/tdContract.test.mjs (browser parser + gate in src/sync/tdCommand.ts) and ../tests/test_td_sync_contract.py (TD builders + pacer in td/morphogen_sync_commands.py). If you change either side's rules, update this file and both suites must still pass. Added 2026-10-23; status frame (TD rtt -> browser) rows added 2026-10-29; setParams (feed / kill only, inside remote_param_range, refused not clamped) rows added 2026-11-05.",
   "version": 1,
+  "remote_param_range": { "feed": [0.01, 0.09], "kill": [0.045, 0.07], "decimals": 4 },
   "built": [
     { "build": ["preset", "coral"], "raw": "{\"v\":1,\"cmd\":\"preset\",\"id\":\"coral\"}", "parsed": { "cmd": "preset", "id": "coral" } },
     { "build": ["preset", "  Mitosis "], "raw": "{\"v\":1,\"cmd\":\"preset\",\"id\":\"mitosis\"}", "parsed": { "cmd": "preset", "id": "mitosis" } },
@@ -10,7 +11,11 @@
     { "build": ["ping", 1234.5], "raw": "{\"v\":1,\"cmd\":\"ping\",\"t\":1234.5}", "parsed": { "cmd": "ping", "t": 1234.5 } },
     { "build": ["status", [8.0, 9.5, 3, 0, 1]], "raw": "{\"v\":1,\"cmd\":\"status\",\"rtt\":{\"last_ms\":8.0,\"median_ms\":9.5,\"samples\":3,\"outstanding\":0,\"lost\":1}}", "parsed": { "cmd": "status", "rtt": { "lastMs": 8, "medianMs": 9.5, "samples": 3, "outstanding": 0, "lost": 1 } } },
     { "build": ["status", [null, null, 0, 2, 0]], "raw": "{\"v\":1,\"cmd\":\"status\",\"rtt\":{\"last_ms\":null,\"median_ms\":null,\"samples\":0,\"outstanding\":2,\"lost\":0}}", "parsed": { "cmd": "status", "rtt": { "lastMs": null, "medianMs": null, "samples": 0, "outstanding": 2, "lost": 0 } } },
-    { "build": ["status", [12.345, 8.25, 16, 1, 4]], "raw": "{\"v\":1,\"cmd\":\"status\",\"rtt\":{\"last_ms\":12.35,\"median_ms\":8.25,\"samples\":16,\"outstanding\":1,\"lost\":4}}", "parsed": { "cmd": "status", "rtt": { "lastMs": 12.35, "medianMs": 8.25, "samples": 16, "outstanding": 1, "lost": 4 } } }
+    { "build": ["status", [12.345, 8.25, 16, 1, 4]], "raw": "{\"v\":1,\"cmd\":\"status\",\"rtt\":{\"last_ms\":12.35,\"median_ms\":8.25,\"samples\":16,\"outstanding\":1,\"lost\":4}}", "parsed": { "cmd": "status", "rtt": { "lastMs": 12.35, "medianMs": 8.25, "samples": 16, "outstanding": 1, "lost": 4 } } },
+    { "build": ["setParams", [0.056, 0.062]], "raw": "{\"v\":1,\"cmd\":\"setParams\",\"feed\":0.056,\"kill\":0.062}", "parsed": { "cmd": "setParams", "params": { "feed": 0.056, "kill": 0.062 } } },
+    { "build": ["setParams", [0.05605, null]], "raw": "{\"v\":1,\"cmd\":\"setParams\",\"feed\":0.0561}", "parsed": { "cmd": "setParams", "params": { "feed": 0.0561 } } },
+    { "build": ["setParams", [null, 0.045]], "raw": "{\"v\":1,\"cmd\":\"setParams\",\"kill\":0.045}", "parsed": { "cmd": "setParams", "params": { "kill": 0.045 } } },
+    { "build": ["setParams", [0.09, null]], "raw": "{\"v\":1,\"cmd\":\"setParams\",\"feed\":0.09}", "parsed": { "cmd": "setParams", "params": { "feed": 0.09 } } }
   ],
   "builder_rejects": [
     ["preset", ""],
@@ -26,10 +31,24 @@
     ["status", [null, null, 1.5, 0, 0]],
     ["status", [null, null, 0, -1, 0]],
     ["status", [null, null, 0, 0, true]],
-    ["status", [null, null, 0, 0, 1000000001]]
+    ["status", [null, null, 0, 0, 1000000001]],
+    ["setParams", [null, null]],
+    ["setParams", [0.2, null]],
+    ["setParams", [0.0099, null]],
+    ["setParams", [null, 0.0701]],
+    ["setParams", ["NaN", null]],
+    ["setParams", [true, null]],
+    ["setParams", ["0.05", null]]
   ],
   "browser_refuses": [
-    "{\"v\":1,\"cmd\":\"setParams\",\"feed\":0.05}",
+    "{\"v\":1,\"cmd\":\"setParams\"}",
+    "{\"v\":1,\"cmd\":\"setParams\",\"feed\":1}",
+    "{\"v\":1,\"cmd\":\"setParams\",\"feed\":0.0099}",
+    "{\"v\":1,\"cmd\":\"setParams\",\"kill\":0.0701}",
+    "{\"v\":1,\"cmd\":\"setParams\",\"feed\":\"0.05\"}",
+    "{\"v\":1,\"cmd\":\"setParams\",\"feed\":null}",
+    "{\"v\":1,\"cmd\":\"setParams\",\"feed\":0.05,\"du\":0.2}",
+    "{\"v\":1,\"cmd\":\"setParams\",\"kill\":0.06,\"dt\":5}",
     "{\"v\":1,\"cmd\":\"freeze\"}",
     "{\"v\":2,\"cmd\":\"preset\",\"id\":\"coral\"}",
     "{\"cmd\":\"preset\",\"id\":\"coral\"}",

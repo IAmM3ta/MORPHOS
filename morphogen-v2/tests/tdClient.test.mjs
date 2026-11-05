@@ -218,9 +218,13 @@ test('commands: only dispatched after the authed ack; ping answered in-client', 
   assert.equal(got.length, 0);
   ws.serverSend(ackOk);
   ws.serverSend({ v: 1, cmd: 'preset', id: 'Coral' });
-  ws.serverSend({ v: 1, cmd: 'setParams', feed: 1 }); // reserved: dropped
+  ws.serverSend({ v: 1, cmd: 'setParams', feed: 1 }); // out of range: dropped, not clamped
+  ws.serverSend({ v: 1, cmd: 'setParams', feed: 0.056 }); // in range: dispatched (2026-11-05)
   ws.serverSend({ v: 1, cmd: 'ping', t: 42 });
-  assert.deepEqual(got, [{ cmd: 'preset', id: 'coral' }]);
+  assert.deepEqual(got, [
+    { cmd: 'preset', id: 'coral' },
+    { cmd: 'setParams', params: { feed: 0.056 } },
+  ]);
   assert.deepEqual(ws.sent.at(-1), { v: 1, pong: 'morphogen', t: 42 });
   assert.equal(td.status, 'open');
   td.disconnect();

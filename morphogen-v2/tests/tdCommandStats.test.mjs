@@ -70,7 +70,7 @@ test('commandStats: one bucket per authed frame; pre-ack frames not counted', ()
   ws.serverSend(ackOk);
   ws.serverSend({ v: 1, cmd: 'preset', id: 'coral' });
   ws.serverSend({ v: 1, cmd: 'ping', t: 5 });
-  ws.serverSend({ v: 1, cmd: 'setParams', feed: 1 }); // reserved
+  ws.serverSend({ v: 1, cmd: 'setParams', feed: 1 }); // out of range: refused
   ws.serverSend('not json');
   const s = td.commandStats();
   assert.equal(s.frames, 4);

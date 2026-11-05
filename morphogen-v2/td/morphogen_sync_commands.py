@@ -20,7 +20,11 @@ Rules mirror the browser so TD never sends a frame the app would silently drop:
     accepted; unknown-but-well-formed ids raise unless allow_unknown=True
     (useful if the browser build has newer presets than this file).
   * Frames are compact JSON and must fit MAX_COMMAND_BYTES (512), the browser's cap.
-  * `setParams` / `freeze` are not offered: the browser refuses them today.
+  * `setParams` (2026-11-05) carries only `feed` / `kill`, each inside
+    REMOTE_PARAM_RANGE and rounded to 4 decimals; out-of-range values raise
+    here instead of being clamped, because the browser refuses (never clamps)
+    them too. `du` / `dv` are not offered: they bound the sim's stable time
+    step. `freeze` is still not offered: the browser refuses it.
   * The browser rate-limits commands (10/s, burst 5); `CommandPacer` applies
     the same token bucket on the TD side so a cue stack can't have frames
     silently discarded at the other end.
@@ -73,6 +77,11 @@ MAX_STATUS_MS = 3_600_000
 MAX_STATUS_COUNT = 1_000_000_000
 COMMAND_RATE_PER_S = 10.0
 COMMAND_BURST = 5.0
+# setParams limits (2026-11-05): only feed / kill, each already inside this
+# inclusive range (the browser's REMOTE_PARAM_RANGE == the slider travel
+# TUNE_RANGE, inside the kernel's PARAM_LIMITS), rounded to 4 decimals.
+REMOTE_PARAM_RANGE = {"feed": (0.01, 0.09), "kill": (0.045, 0.07)}
+REMOTE_PARAM_DECIMALS = 4
 # --- keep in sync with PRESET_ORDER in morphogen-v2/src/ui/field.ts --------
 PRESET_IDS = (
     "mitosis",
@@ -127,6 +136,37 @@ def make_ping_command(t_ms: float) -> str:
     if isinstance(t_ms, bool) or not isinstance(t_ms, (int, float)) or not math.isfinite(t_ms):
         raise ValueError("ping t must be a finite number of ms")
     return _dump({"v": 1, "cmd": "ping", "t": t_ms})
+
+
+def _remote_param(knob: str, v: Any) -> float:
+    if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v):
+        raise ValueError(f"setParams {knob} must be a finite number")
+    lo, hi = REMOTE_PARAM_RANGE[knob]
+    if v < lo or v > hi:
+        raise ValueError(f"setParams {knob} {v!r} outside {lo}..{hi} (the browser refuses, it does not clamp)")
+    # Half-up on the decimal text, so 0.05605 -> 0.0561 like a person expects;
+    # the browser re-rounds the already-rounded value, which leaves it unchanged.
+    q = Decimal(repr(float(v))).quantize(Decimal(1).scaleb(-REMOTE_PARAM_DECIMALS), rounding=ROUND_HALF_UP)
+    return float(q)
+
+
+def make_setparams_command(feed: Any = None, kill: Any = None) -> str:
+    """Serialize `{v:1, cmd:"setParams", feed?, kill?}` — move the browser's Field sliders.
+
+    Pass one or both knobs (None = leave it alone). Each must be a finite
+    number inside REMOTE_PARAM_RANGE; it is rounded to 4 decimals, the same
+    step as the on-screen sliders. Raises ValueError for anything the browser
+    would refuse, so a bad cue fails loudly in TD instead of silently at the
+    other end.
+    """
+    msg: Dict[str, Any] = {"v": 1, "cmd": "setParams"}
+    if feed is not None:
+        msg["feed"] = _remote_param("feed", feed)
+    if kill is not None:
+        msg["kill"] = _remote_param("kill", kill)
+    if len(msg) == 2:
+        raise ValueError("setParams needs feed and/or kill")
+    return _dump(msg)
 
 
 def _status_ms(name: str, v: Any) -> Optional[float]:
@@ -439,11 +479,12 @@ class SendStats:
     presets: int = 0
     pings: int = 0
     statuses: int = 0
+    params: int = 0
     paced: int = 0
     no_client: int = 0
 
     def record(self, kind: str, outcome: str) -> None:
-        """Count one send attempt. kind is "preset", "ping" or "status"; unknown values are ignored."""
+        """Count one send attempt. kind is "preset", "ping", "status" or "params"; unknown values are ignored."""
         if outcome == SENT:
             if kind == "preset":
                 self.presets += 1
@@ -451,13 +492,15 @@ class SendStats:
                 self.pings += 1
             elif kind == "status":
                 self.statuses += 1
+            elif kind == "params":
+                self.params += 1
         elif outcome == PACED:
             self.paced += 1
         elif outcome == NO_CLIENT:
             self.no_client += 1
 
     def reset(self) -> None:
-        self.presets = self.pings = self.statuses = self.paced = self.no_client = 0
+        self.presets = self.pings = self.statuses = self.params = self.paced = self.no_client = 0
 
     def as_rows(self) -> List[List[Any]]:
         """Rows for an optional `morphogen_cmds` Table DAT (name, count)."""
@@ -465,6 +508,7 @@ class SendStats:
             ["presets", self.presets],
             ["pings", self.pings],
             ["statuses", self.statuses],
+            ["params", self.params],
             ["paced", self.paced],
             ["no_client", self.no_client],
         ]
@@ -484,6 +528,7 @@ def describe_send_stats(s: SendStats) -> str:
     add(s.presets, "preset", "presets")
     add(s.pings, "ping", "pings")
     add(s.statuses, "status", "statuses")
+    add(s.params, "setParams", "setParams")
     add(s.paced, "paced", "paced")
     add(s.no_client, "with no authed client", "with no authed client")
     return "TD sent: " + (" · ".join(parts) if parts else "none yet")

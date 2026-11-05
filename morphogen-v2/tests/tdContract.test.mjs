@@ -8,7 +8,16 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { parseTdCommand, pongFor, createCommandGate, describeTdRtt } from '../.test-build/tdCommand.mjs';
+import {
+  parseTdCommand,
+  pongFor,
+  createCommandGate,
+  describeTdRtt,
+  REMOTE_PARAM_RANGE,
+  REMOTE_PARAM_DECIMALS,
+} from '../.test-build/tdCommand.mjs';
+import { TUNE_RANGE, TUNE_STEP } from '../.test-build/fieldTune.mjs';
+import { PARAM_LIMITS } from '../.test-build/grayScott.mjs';
 
 const fixture = JSON.parse(readFileSync(new URL('./fixtures/td-commands.v1.json', import.meta.url), 'utf8'));
 
@@ -45,5 +54,17 @@ test('contract: describeTdRtt prints the same line as TD describe_rtt_fields (20
     const cmd = parseTdCommand(JSON.stringify({ v: 1, cmd: 'status', rtt: row.rtt }));
     assert.ok(cmd && cmd.cmd === 'status', JSON.stringify(row.rtt));
     assert.equal(describeTdRtt(cmd.rtt), row.line);
+  }
+});
+
+test('contract: setParams range = fixture = slider travel, inside PARAM_LIMITS (2026-11-05)', () => {
+  const want = fixture.remote_param_range;
+  assert.equal(REMOTE_PARAM_DECIMALS, want.decimals);
+  assert.equal(1 / 10 ** REMOTE_PARAM_DECIMALS, TUNE_STEP, 'rounding matches the slider step');
+  for (const knob of ['feed', 'kill']) {
+    assert.deepEqual([...REMOTE_PARAM_RANGE[knob]], want[knob], `${knob} vs fixture`);
+    assert.deepEqual([...REMOTE_PARAM_RANGE[knob]], [...TUNE_RANGE[knob]], `${knob} vs TUNE_RANGE`);
+    const [lo, hi] = REMOTE_PARAM_RANGE[knob];
+    assert.ok(lo >= PARAM_LIMITS[knob][0] && hi <= PARAM_LIMITS[knob][1], `${knob} inside PARAM_LIMITS`);
   }
 });

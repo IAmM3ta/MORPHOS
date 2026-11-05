@@ -14,6 +14,7 @@ import {
   MAX_COMMAND_BYTES,
   MAX_PRESET_ID_LEN,
   COMMAND_BURST,
+  REMOTE_PARAM_RANGE,
 } from '../.test-build/tdCommand.mjs';
 
 const j = (o) => JSON.stringify(o);
@@ -41,7 +42,7 @@ test('ping: finite t echoed, anything else becomes null', () => {
 
 test('reserved / unknown commands and malformed frames are refused', () => {
   for (const raw of [
-    j({ v: 1, cmd: 'setParams', feed: 0.05 }),
+    j({ v: 1, cmd: 'setParams', feed: 0.5 }), // accepted since 2026-11-05, but only in range
     j({ v: 1, cmd: 'freeze' }),
     j({ v: 1, cmd: 'rm -rf' }),
     j({ v: 2, cmd: 'preset', id: 'coral' }),
@@ -101,4 +102,39 @@ test('status: bounds are inclusive, every field required, extra fields ignored (
     assert.equal(parseTdCommand(frame(rest)), null, `missing ${key}`);
   }
   assert.equal(describeTdRtt({ lastMs: 3, medianMs: null, samples: 1, outstanding: 0, lost: 0 }), 'TD rtt: 3.0 ms');
+});
+
+// --- setParams (2026-11-05): feed / kill only, refused (never clamped) out of range ---
+
+test('setParams: feed and/or kill inside the range, rounded to 4 decimals', () => {
+  assert.deepEqual(parseTdCommand(j({ v: 1, cmd: 'setParams', feed: 0.056 })), { cmd: 'setParams', params: { feed: 0.056 } });
+  assert.deepEqual(parseTdCommand(j({ v: 1, cmd: 'setParams', kill: 0.062, feed: 0.03 })), {
+    cmd: 'setParams',
+    params: { feed: 0.03, kill: 0.062 },
+  });
+  assert.deepEqual(parseTdCommand(j({ v: 1, cmd: 'setParams', feed: 0.056789 })).params, { feed: 0.0568 });
+  for (const knob of ['feed', 'kill']) {
+    const [lo, hi] = REMOTE_PARAM_RANGE[knob];
+    assert.deepEqual(parseTdCommand(j({ v: 1, cmd: 'setParams', [knob]: lo })).params, { [knob]: lo }, 'lo inclusive');
+    assert.deepEqual(parseTdCommand(j({ v: 1, cmd: 'setParams', [knob]: hi })).params, { [knob]: hi }, 'hi inclusive');
+  }
+});
+
+test('setParams: out of range, junk, du / dv / extra keys and empty frames are refused whole', () => {
+  const refused = [
+    { v: 1, cmd: 'setParams' },
+    { v: 1, cmd: 'setParams', feed: 0.0999 },
+    { v: 1, cmd: 'setParams', feed: -0.05 },
+    { v: 1, cmd: 'setParams', kill: 0.0449 },
+    { v: 1, cmd: 'setParams', feed: '0.05' },
+    { v: 1, cmd: 'setParams', feed: null },
+    { v: 1, cmd: 'setParams', feed: true },
+    { v: 1, cmd: 'setParams', feed: 0.05, du: 0.2 }, // du/dv bound the stable dt: never remote
+    { v: 1, cmd: 'setParams', kill: 0.06, dv: 0.1 },
+    { v: 1, cmd: 'setParams', feed: 0.05, params: { feed: 0.05 } },
+    { v: 1, cmd: 'setParams', feed: 0.05, kill: 0.5 }, // one bad knob refuses the good one too
+  ];
+  for (const f of refused) assert.equal(parseTdCommand(j(f)), null, j(f));
+  assert.equal(parseTdCommand('{"v":1,"cmd":"setParams","feed":1e999}'), null, 'Infinity');
+  assert.equal(parseTdCommand(j({ v: 1, cmd: 'setParams', ['__proto__']: 1, feed: 0.05 })), null);
 });

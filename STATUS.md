@@ -2,6 +2,20 @@
 
 RedBot daily cadence notes for `IAmM3ta/MORPHOS`. Newest first.
 
+## 2026-11-05 (09:30 ET — daily commit)
+
+**Landed:** the first "next" item from 11-04 — TD can now drive the feed / kill sliders through the reserved `setParams` command, after its own limits review.
+
+- Limits review (written into the `src/sync/tdCommand.ts` header): only `feed` / `kill` are remote-drivable; `du` / `dv` bound the stable dt (`maxStableDt`), so any frame with `du`, `dv`, `dt` or another extra key is refused whole. Values must already be inside `REMOTE_PARAM_RANGE` (feed 0.01–0.09, kill 0.045–0.07 — equal to `TUNE_RANGE`, inside `PARAM_LIMITS`) and are **refused, not clamped**, so TD can't believe it set a number the browser isn't running. 4-decimal rounding on both sides; at least one knob; normal gate token, counts as `applied`. `freeze` stays refused.
+- Browser: `parseTdCommand` returns `{cmd:"setParams", params}`; `main.ts` applies it as a partial `sim.setParams`, calls `sliders.sync`, status line ends `· from TD`.
+- TD: `REMOTE_PARAM_RANGE` / `REMOTE_PARAM_DECIMALS`, `make_setparams_command(feed, kill)` (half-up decimal rounding, raises on anything the browser refuses), `send_params(dat, feed=, kill=)` in the callbacks; `SendStats.params` (new `params` row in `morphogen_cmds`, `N setParams` in `send_stats_line()`).
+- Contract fixture: `remote_param_range`, 4 built setParams frames, 7 builder rejects, the old "setParams is refused" row replaced by 8 targeted refusals (bare, out of range both ways, string, null, `du`, `dt`).
+- Tests: tdCommand (accept / round / inclusive ends; refusals incl. one bad knob sinking the good one, `__proto__`, Infinity), tdClient (in-range setParams dispatched, out-of-range dropped), tdContract (range = fixture = `TUNE_RANGE` ⊂ `PARAM_LIMITS`), tdCommandsDoc (example frame + Limits rows drift test), pytest contract range check, builder limits, `send_params` tally.
+- Docs: `TD-COMMANDS.md` file map, sequence diagram, frame section, Limits rows, troubleshooting; `morphogen-v2/README.md`; root README changelog.
+- Verified with `scripts/ci_local.sh all`: root `pytest` 116 pass, 2 skipped (was 102); `npm test` 146 pass (was 142); `tsc --noEmit` clean; no-WebGL check OK. Not tried against a live TouchDesigner or browser this run.
+
+**Next focus candidates:** a quick in-browser pass on the slider layout in `?perform=1` (and a TD `send_params` cue), STE / soft-quant work inside the codec `train_step`, `freeze` with its own review (who un-freezes if TD drops?).
+
 ## 2026-11-04 (09:30 ET — daily commit)
 
 **Landed:** the "Field-panel feed / kill sliders" item that has sat at the top of the next-focus list since 10-31.

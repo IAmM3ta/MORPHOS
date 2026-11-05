@@ -15,6 +15,7 @@ import {
   COMMAND_BURST,
   MAX_STATUS_MS,
   MAX_STATUS_COUNT,
+  REMOTE_PARAM_RANGE,
   parseTdCommand,
   pongFor,
 } from '../.test-build/tdCommand.mjs';
@@ -62,9 +63,24 @@ test('status example in the doc parses to the fixture row (2026-10-29)', () => {
 });
 
 test('reserved commands named in the doc are refused', () => {
-  for (const cmd of ['setParams', 'freeze']) {
+  // setParams left the reserved list on 2026-11-05, but a bare one (no knob) is still refused.
+  for (const cmd of ['freeze', 'setParams']) {
     assert.ok(doc.includes(`\`${cmd}\``), `doc names ${cmd}`);
     assert.equal(parseTdCommand(JSON.stringify({ v: 1, cmd })), null);
+  }
+});
+
+test('setParams example and range rows in the doc match the code (2026-11-05)', () => {
+  const raw = '{"v":1,"cmd":"setParams","feed":0.056,"kill":0.062}';
+  assert.ok(doc.includes(`\`${raw}\``), 'doc shows the setParams frame');
+  const row = fixture.built.find((r) => r.raw === raw);
+  assert.ok(row, 'fixture has the same setParams frame');
+  assert.deepEqual(parseTdCommand(raw), row.parsed);
+  for (const knob of ['feed', 'kill']) {
+    const line = doc.split('\n').find((l) => l.startsWith('|') && l.includes(`\`REMOTE_PARAM_RANGE.${knob}\``));
+    assert.ok(line, `Limits table has REMOTE_PARAM_RANGE.${knob}`);
+    const nums = line.split('|')[2].match(/[0-9.]+/g).map(Number);
+    assert.deepEqual(nums, [...REMOTE_PARAM_RANGE[knob]], `${knob} range row`);
   }
 });
 

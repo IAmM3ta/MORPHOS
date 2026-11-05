@@ -176,7 +176,17 @@ function main(): void {
   // TD → app commands (authed sessions only; parsed + rate-limited in
   // sync/tdCommand.ts). `preset` goes through the same cycler as the Field
   // button, so an unknown id from TD is a no-op and the label stays honest.
+  // `setParams` (2026-11-05) is TD moving the feed / kill sliders: the parser
+  // already refused anything outside REMOTE_PARAM_RANGE or touching du / dv,
+  // so here it is the same partial sim.setParams the sliders use, then the
+  // sliders are snapped to what the kernel now runs.
   td.onCommand = (cmd) => {
+    if (cmd.cmd === 'setParams') {
+      sim.setParams(cmd.params);
+      sliders?.sync(sim.params);
+      setStatus(`${describeTune(PRESETS[field.current()].name, sim.params)} · from TD`);
+      return;
+    }
     if (cmd.cmd !== 'preset') return;
     const before = field.current();
     const now = field.set(cmd.id);

@@ -19,10 +19,30 @@
  *                                         so the browser can show what only TD
  *                                         could see before: lost pings.
  *
- * Deliberately refused for now (parse → null): "setParams" and "freeze". They
- * are in the spec but need their own limits review before a remote peer can
- * drive kernel numbers or stop the sim; refusing them keeps the door shut
- * without precluding them later.
+ *   { v:1, cmd:"setParams", feed?:number, kill?:number }
+ *                                      → fine-tune the Field like the sliders do
+ *                                         (2026-11-05). main.ts applies it as a
+ *                                         partial sim.setParams and snaps the
+ *                                         feed / kill sliders to the new values.
+ *
+ * setParams limits review (2026-11-05) — why the frame is this narrow:
+ *   - Only `feed` and `kill` are remote-drivable. `du` / `dv` set the stable
+ *     time step (maxStableDt: D·dt ≤ 1/4), so a remote peer must not touch
+ *     them; a frame carrying du, dv, dt or any other extra key is refused
+ *     whole rather than half-applied.
+ *   - Each value must already sit inside REMOTE_PARAM_RANGE (the same travel
+ *     as the on-screen sliders, TUNE_RANGE in ui/fieldTune.ts, itself inside
+ *     the kernel's PARAM_LIMITS). Out-of-range values are *refused, not
+ *     clamped*: a clamp would leave TD believing it set 0.2 while the browser
+ *     runs 0.09, and the refused tally makes the mistake visible instead.
+ *   - Values are rounded to 4 decimals (TUNE_STEP), matching the slider snap
+ *     and TD's builder, so both sides agree on the exact number.
+ *   - At least one knob must be present; an empty setParams is junk.
+ *   - It is an ordinary command: authed sessions only, spends a gate token,
+ *     counts as `applied`.
+ *
+ * Still refused (parse → null): "freeze". Stopping the sim remotely needs its
+ * own review (who un-freezes it if TD drops?), so the door stays shut for now.
  *
  * Trust model: frames only reach this parser after TD acked our authed hello
  * (TdClient checks status === 'open'), but they are still treated as untrusted
@@ -51,6 +71,18 @@ export const MAX_PRESET_ID_LEN = 32;
 export const MAX_STATUS_MS = 3_600_000;
 /** Status counters above a billion are junk too (TD: MAX_STATUS_COUNT). */
 export const MAX_STATUS_COUNT = 1_000_000_000;
+/**
+ * Inclusive range a TD `setParams` value must already sit in (2026-11-05).
+ * Equal to the slider travel (TUNE_RANGE) and inside PARAM_LIMITS; the TD twin
+ * is REMOTE_PARAM_RANGE in td/morphogen_sync_commands.py and the shared
+ * fixture's remote_param_range pins both (tests check all three agree).
+ */
+export const REMOTE_PARAM_RANGE = {
+  feed: [0.01, 0.09],
+  kill: [0.045, 0.07],
+} as const;
+/** Decimals a remote feed / kill is rounded to (same as the slider's TUNE_STEP 0.0001). */
+export const REMOTE_PARAM_DECIMALS = 4;
 /** Sustained command rate the gate allows (per second). */
 export const COMMAND_RATE_PER_S = 10;
 /** Short burst allowance on top of the sustained rate (e.g. a TD cue stack firing at once). */
@@ -70,7 +102,10 @@ export type TdRtt = {
   lost: number;
 };
 export type TdStatusCommand = { cmd: 'status'; rtt: TdRtt };
-export type TdCommand = TdPresetCommand | TdPingCommand | TdStatusCommand;
+/** Partial feed / kill patch from TD; at least one key is present. */
+export type TdParamsPatch = { feed?: number; kill?: number };
+export type TdSetParamsCommand = { cmd: 'setParams'; params: TdParamsPatch };
+export type TdCommand = TdPresetCommand | TdPingCommand | TdStatusCommand | TdSetParamsCommand;
 
 /** What TdClient sends back for a ping. `t` echoes the ping's own clock (or null). */
 export type TdPong = { v: 1; pong: 'morphogen'; t: number | null };
@@ -108,8 +143,34 @@ export function parseTdCommand(raw: unknown): TdCommand | null {
     const rtt = parseTdRtt(m.rtt);
     return rtt ? { cmd: 'status', rtt } : null;
   }
-  // 'setParams' / 'freeze' / unknown: reserved, not accepted yet.
+  if (m.cmd === 'setParams') {
+    const params = parseRemoteParams(m);
+    return params ? { cmd: 'setParams', params } : null;
+  }
+  // 'freeze' / unknown: reserved, not accepted yet.
   return null;
+}
+
+const SETPARAMS_KEYS = new Set(['v', 'cmd', 'feed', 'kill']);
+
+/**
+ * Validate a setParams frame's knobs (see the limits review in the header).
+ * Returns the rounded patch, or null if any key is unexpected, any value is
+ * not a finite number inside REMOTE_PARAM_RANGE, or no knob is present.
+ */
+function parseRemoteParams(m: Record<string, unknown>): TdParamsPatch | null {
+  for (const k of Object.keys(m)) if (!SETPARAMS_KEYS.has(k)) return null;
+  const scale = 10 ** REMOTE_PARAM_DECIMALS;
+  const patch: TdParamsPatch = {};
+  for (const knob of ['feed', 'kill'] as const) {
+    if (!Object.prototype.hasOwnProperty.call(m, knob)) continue;
+    const v = m[knob];
+    if (typeof v !== 'number' || !Number.isFinite(v)) return null;
+    const [lo, hi] = REMOTE_PARAM_RANGE[knob];
+    if (v < lo || v > hi) return null; // refuse, never clamp
+    patch[knob] = Math.round(v * scale) / scale;
+  }
+  return patch.feed === undefined && patch.kill === undefined ? null : patch;
 }
 
 /**
@@ -200,7 +261,8 @@ export function createCommandGate(
  *   refused       → parseTdCommand returned null (junk, reserved, oversized)
  *   paced         → well-formed but the rate gate said no
  *   pings         → answered in-client with a pong
- *   applied       → handed to onCommand (preset, and status since 2026-10-29)
+ *   applied       → handed to onCommand (preset, status since 2026-10-29,
+ *                   setParams since 2026-11-05)
  * handlerErrors counts applied commands whose onCommand handler threw (it is
  * a subset of applied, not a separate bucket). lastAt is the client clock
  * (TdClientOptions.now) of the latest frame, or null before the first.

@@ -13,8 +13,8 @@ is the map. `tests/tdCommandsDoc.test.mjs` fails if the numbers below drift from
 | Browser | `morphogen-v2/src/sync/tdCommand.ts` | The only parser for inbound TD frames (`parseTdCommand`), the rate gate (`createCommandGate`), the pong shape (`pongFor`), the tally line (`describeCommandStats`) and the TD RTT line (`describeTdRtt`). Pure, no DOM. |
 | Browser | `morphogen-v2/src/sync/tdClient.ts` | `handleCommand` routes each authed frame through parse → gate → ping/apply and counts it in `commandStats()`; keeps the latest TD `status` RTT in `tdRtt()` (cleared on every fresh ack). |
 | Browser | `morphogen-v2/src/ui/panels.ts` | `mountSyncCommandLine` shows the tally as the `#syncCmds` chip while the session is authed; `mountSyncRttLine` shows TD's latest RTT as the `#syncRtt` chip once a `status` frame arrived this session (amber when `lost` > 0). |
-| TD | `morphogen-v2/td/morphogen_sync_commands.py` | Frame builders (`make_preset_command`, `make_ping_command`, `make_status_command` / `RttTracker.status_frame()`), `CommandPacer` (same bucket as the browser), `RttTracker` (RTT samples, 5 s lost-ping expiry, `describe_rtt`), `StatusHeartbeat` (when the next periodic status frame is due), `SendStats` / `describe_send_stats`. |
-| TD | `morphogen-v2/td/morphogen_sync_callbacks.py` | `send_preset(dat, id)` / `send_ping(dat)` / `send_status(dat)` broadcast to **authed clients only**; `status_tick(dat)` is the every-frame-safe way to keep status flowing (≤ 1 per second, only while authed, immediate after a fresh ack, idle ticks untallied); pongs and lost / outstanding pings go to `morphogen_rtt` (`rtt_line()` prints one line), send tallies to `morphogen_cmds`, `send_stats_line()` prints one line. |
+| TD | `morphogen-v2/td/morphogen_sync_commands.py` | Frame builders (`make_preset_command`, `make_ping_command`, `make_setparams_command`, `make_status_command` / `RttTracker.status_frame()`), `CommandPacer` (same bucket as the browser), `RttTracker` (RTT samples, 5 s lost-ping expiry, `describe_rtt`), `StatusHeartbeat` (when the next periodic status frame is due), `SendStats` / `describe_send_stats`. |
+| TD | `morphogen-v2/td/morphogen_sync_callbacks.py` | `send_preset(dat, id)` / `send_params(dat, feed=, kill=)` / `send_ping(dat)` / `send_status(dat)` broadcast to **authed clients only**; `status_tick(dat)` is the every-frame-safe way to keep status flowing (≤ 1 per second, only while authed, immediate after a fresh ack, idle ticks untallied); pongs and lost / outstanding pings go to `morphogen_rtt` (`rtt_line()` prints one line), send tallies to `morphogen_cmds`, `send_stats_line()` prints one line. |
 | Both | `morphogen-v2/tests/fixtures/td-commands.v1.json` | Golden contract: exact frame bytes, refusals, pong shape, gate verdicts and the shared RTT line (`rtt_lines`). Read by the node suite and by pytest. |
 
 ## Lifecycle
@@ -33,6 +33,8 @@ sequenceDiagram
   Note over T: RttTracker updates morphogen_rtt
   T->>B: {v:1, cmd:"status", rtt:{last_ms, median_ms, samples, outstanding, lost}}
   Note over B: tdRtt() keeps the latest, describeTdRtt prints it
+  T->>B: {v:1, cmd:"setParams", feed:0.056, kill:0.062}
+  Note over B: range-checked, partial sim.setParams, sliders snap to it
 ```
 
 Nothing is parsed as a command before the ack. A fresh ack (reconnect, new
@@ -59,8 +61,29 @@ Accepted (v1):
   token, so send it from a slow timer (about once a second). Adding it was not
   wire-breaking: an older browser simply counts it as `refused`.
 
+- `{"v":1,"cmd":"setParams","feed":0.056,"kill":0.062}` (added 2026-11-05)
+  moves the Field **feed** / **kill** sliders from TD. Send one knob or both
+  (`send_params(dat, feed=0.056)` in TD). The browser applies it exactly like a
+  slider move (a partial `sim.setParams`, so `sanitizeParams` still guards the
+  kernel), snaps both sliders to the result and ends the status line in
+  `· from TD`. Limits review, all enforced by `parseTdCommand` and mirrored by
+  `make_setparams_command`:
+  - only `feed` and `kill`; a frame with `du`, `dv`, `dt` or any other extra
+    key is refused whole (diffusion rates set the stable time step, so a
+    remote peer must not move them);
+  - each value must already be inside `REMOTE_PARAM_RANGE` (the slider travel,
+    inside the kernel's `PARAM_LIMITS`); out-of-range values are **refused,
+    not clamped**, so TD never believes it set a number the browser isn't
+    running, and the mistake shows up in the `refused` tally;
+  - values are rounded to 4 decimals (the slider step); TD rounds first, so
+    both sides agree on the exact number;
+  - at least one knob; a bare `setParams` is refused;
+  - it counts as `applied` and spends a gate token like `preset`, so drive it
+    from a slowed CHOP (≤ 10/s), never every frame.
+
 Refused (parse returns `null`, frame dropped, session untouched):
-`setParams` and `freeze` (reserved until they get their own limits review),
+`freeze` (reserved until it gets its own limits review), out-of-range or
+extra-key `setParams` frames,
 any `v` other than `1`, missing `cmd`, arrays, non-JSON, malformed preset ids,
 and anything over the size cap.
 
@@ -74,6 +97,8 @@ and anything over the size cap.
 | Burst | 5 frames | `COMMAND_BURST` |
 | Max status RTT value | 3600000 ms | `MAX_STATUS_MS` |
 | Max status counter | 1000000000 | `MAX_STATUS_COUNT` |
+| Remote feed range (inclusive) | 0.01 to 0.09 | `REMOTE_PARAM_RANGE.feed` |
+| Remote kill range (inclusive) | 0.045 to 0.07 | `REMOTE_PARAM_RANGE.kill` |
 
 The gate is a token bucket. A backwards or non-finite clock refills nothing, so
 a bad timestamp can only make it stricter. Refused frames are counted **before**
@@ -92,7 +117,8 @@ session, `applied + pings + refused + paced === frames` on the browser side.
 | TD `with no authed client` grows, browser chip hidden | No authed browser: TD dropped the send locally. | `Syncsecret` on the TD COMP, the browser's Sync URL, the Sync chip state. |
 | TD `paced` grows | TD's own pacer held the frame back; it never hit the wire. | Slow the cue stack or spread cues out. |
 | Browser `paced` grows (chip turns amber) | Frames reached the browser faster than 10/s burst 5, so TD's pacer was bypassed or the clocks disagree. | Something sending without `send_preset` / `send_ping`; a second TD sender. |
-| Browser `refused` grows | TD sent frames this build doesn't accept (reserved command, newer `v`, bad id). | TD script version vs. this contract; the fixture's `browser_refuses` list. |
+| Browser `refused` grows | TD sent frames this build doesn't accept (reserved command, newer `v`, bad id, a `setParams` value outside `REMOTE_PARAM_RANGE` or with `du` / `dv`). | TD script version vs. this contract; the fixture's `browser_refuses` list. |
+| TD `setParams` count matches browser `applied` but the sliders don't move | Older `index.html` without `#feedSlider` / `#killSlider`: the kernel still changes, there is just nothing to snap. | The status line should still end in `· from TD`. |
 | Browser `handler errors` > 0 | The preset handler threw; telemetry kept flowing. | Browser console, `main.ts` preset routing. |
 | `morphogen_rtt` `lost` grows (or `rtt_line()` ends in `· N lost`) | Pings got no pong within 5 s (`RttTracker.timeout_ms`), or were pushed out by the 32-outstanding cap. Late pongs are ignored. | Network, the browser tab being backgrounded or frozen, reconnect count in the Sync chip. |
 | `#syncRtt` chip never appears while `#syncCmds` is live | TD hasn't sent a `status` frame since this session's ack (the chip waits for one, so it never shows the previous session's figures). | Call `status_tick(dat)` every frame (e.g. an Execute DAT's `onFrameStart`) or `send_status(dat)` from a ~1 s timer; `TD sent:` should show `statuses`. |

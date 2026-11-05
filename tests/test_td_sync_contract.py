@@ -18,6 +18,8 @@ sys.path.insert(0, os.path.join(ROOT, "td"))
 
 from morphogen_sync_commands import (  # noqa: E402
     PONG,
+    REMOTE_PARAM_DECIMALS,
+    REMOTE_PARAM_RANGE,
     CommandPacer,
     RttTracker,
     classify_inbound,
@@ -26,6 +28,7 @@ from morphogen_sync_commands import (  # noqa: E402
     make_ping_command,
     make_status_command,
     make_preset_command,
+    make_setparams_command,
 )
 
 with open(os.path.join(ROOT, "tests", "fixtures", "td-commands.v1.json"), encoding="utf-8") as fh:
@@ -46,6 +49,9 @@ def _build(spec):
     if kind == "status":
         args = [float(a) if a in ("NaN", "Infinity") else a for a in arg]
         return make_status_command(*args)
+    if kind == "setParams":
+        feed, kill = [float(a) if a in ("NaN", "Infinity") else a for a in arg]
+        return make_setparams_command(feed, kill)
     raise AssertionError(f"unknown build kind {kind!r}")
 
 
@@ -96,3 +102,10 @@ def test_tracker_status_frame_round_trips_its_own_line():
     r = frame["rtt"]
     assert describe_rtt_fields(r["last_ms"], r["median_ms"], r["lost"]) == describe_rtt(tracker)
     assert r == {"last_ms": 8.0, "median_ms": 8.0, "samples": 1, "outstanding": 0, "lost": 0}
+
+
+def test_remote_param_range_matches_fixture():
+    """setParams limits (2026-11-05): TD's range and rounding equal the shared fixture's."""
+    want = FIXTURE["remote_param_range"]
+    assert {k: list(v) for k, v in REMOTE_PARAM_RANGE.items()} == {"feed": want["feed"], "kill": want["kill"]}
+    assert REMOTE_PARAM_DECIMALS == want["decimals"]

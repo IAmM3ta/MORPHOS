@@ -212,7 +212,7 @@ def test_send_tally_separates_paced_from_no_client(td):
     for _ in range(6):  # burst of 5, then one paced out
         cb.send_preset(dat, "coral")
     assert (cb._stats.presets, cb._stats.paced, cb._stats.no_client) == (5, 1, 0)
-    assert tables["morphogen_cmds"].rows == [["presets", 5], ["pings", 0], ["statuses", 0], ["paced", 1], ["no_client", 0]]
+    assert tables["morphogen_cmds"].rows == [["presets", 5], ["pings", 0], ["statuses", 0], ["params", 0], ["paced", 1], ["no_client", 0]]
     assert cb.send_stats_line() == "TD sent: 5 presets · 1 paced"
     cb.onDisconnect(dat, "a")
     assert cb.send_preset(dat, "coral") == 0
@@ -436,3 +436,32 @@ def test_status_tick_paced_out_waits_a_full_interval(td):
     assert cb._stats.paced == 1  # no retry every frame
     now[0] += 1000.0
     assert cb.status_tick(dat) == 1
+
+
+# --- 2026-11-05: setParams (TD moves the browser's feed / kill sliders) -------
+
+
+def test_make_setparams_command_limits():
+    from morphogen_sync_commands import REMOTE_PARAM_RANGE, make_setparams_command
+
+    assert make_setparams_command(feed=0.056) == '{"v":1,"cmd":"setParams","feed":0.056}'
+    assert make_setparams_command(kill=0.0620004) == '{"v":1,"cmd":"setParams","kill":0.062}'
+    # Both ends of the range are inclusive.
+    lo, hi = REMOTE_PARAM_RANGE["feed"]
+    assert json.loads(make_setparams_command(feed=lo))["feed"] == lo
+    assert json.loads(make_setparams_command(feed=hi))["feed"] == hi
+    for bad in ({}, {"feed": 0.2}, {"kill": 0.01}, {"feed": float("nan")}, {"feed": True}, {"kill": "0.06"}):
+        with pytest.raises(ValueError):
+            make_setparams_command(**bad)
+
+
+def test_send_params_goes_to_authed_clients_and_is_tallied(td):
+    dat, tables, _ = td
+    assert cb.send_params(dat, feed=0.056, kill=0.062) == 1
+    assert dat.sent == [("a", '{"v":1,"cmd":"setParams","feed":0.056,"kill":0.062}')]
+    assert cb._stats.params == 1
+    assert ["params", 1] in tables["morphogen_cmds"].rows
+    assert "1 setParams" in cb.send_stats_line()
+    with pytest.raises(ValueError):
+        cb.send_params(dat, feed=0.5)  # validated before the pacer, even when nothing would go
+    assert cb._stats.params == 1

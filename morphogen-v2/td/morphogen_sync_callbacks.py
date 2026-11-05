@@ -34,6 +34,12 @@ so a dead link shows as a rising `lost` count instead of a frozen table.
 `rtt_line()` gives a one-liner for a Text TOP. The RTT tracker resets with
 the pacer and the send tally on each fresh authed hello.
 
+Remote sliders (2026-11-05): `send_params(dat, feed=0.056, kill=0.062)` moves
+the browser's Field feed / kill sliders through the `setParams` command. Only
+those two knobs, only inside REMOTE_PARAM_RANGE (raises otherwise), rounded to
+4 decimals; the browser applies it like a slider move and its status line ends
+in `· from TD`.
+
 Status heartbeat (2026-10-31): instead of wiring send_status() to a Timer
 CHOP and getting the cadence right by hand, call `status_tick(dat)` as often
 as you like (e.g. every frame from an Execute DAT's onFrameStart). It sends a
@@ -59,6 +65,7 @@ from morphogen_sync_commands import (  # noqa: E402
     describe_rtt,
     describe_send_stats,
     make_preset_command,
+    make_setparams_command,
 )
 
 _gate = None
@@ -137,6 +144,19 @@ def send_preset(dat, preset_id, allow_unknown=False):
     """
     frame = make_preset_command(preset_id, allow_unknown)
     return _broadcast(dat, "preset", lambda: frame)
+
+
+def send_params(dat, feed=None, kill=None):
+    """Move the browser's feed / kill sliders, e.g. send_params(op('websocket1'), feed=0.056).
+
+    Pass one or both knobs. Values are validated up front against
+    REMOTE_PARAM_RANGE (raises ValueError, never clamps), like send_preset, so
+    a cue with an out-of-range number fails loudly every time. Shares the
+    pacer budget with presets / pings / status, so drive it from a slowed
+    CHOP (<= 10/s), not every frame. Counted as `params` in morphogen_cmds.
+    """
+    frame = make_setparams_command(feed, kill)
+    return _broadcast(dat, "params", lambda: frame)
 
 
 def send_ping(dat):
