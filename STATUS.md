@@ -2,6 +2,16 @@
 
 RedBot daily cadence notes for `IAmM3ta/MORPHOS`. Newest first.
 
+## 2026-11-06 (09:30 ET — daily commit)
+
+**Landed:** a docs-only pass — `docs/MORPHOS-AND-MORPHOGEN.md` was a 12-line table, and after seven weeks of daily commits a new reader had no map of where the codec, the Morphogen v2 modules, the TD side and the red-team notes live.
+
+- `docs/MORPHOS-AND-MORPHOGEN.md`: kept the original artifact table and `npm run dev` snippet; added "Where things live" (codec files, `morphogen-v2/src/*` folders, `td/`, `tests/`, each red-team file and what to read it for), "Checking your work" (`scripts/ci_local.sh all|python|node`, bare root `pytest` skipping torch suites) and "Two contracts that are easy to break" (the TD ↔ browser fixture twins; the no-WebGL rule).
+- Every path in the map was checked against the repo's directory listings on `main` this run; no code, test or workflow file changed.
+- README changelog entry added. Not run this pass: `scripts/ci_local.sh` (docs-only change, no build box in this run), so the test counts from 11-05 stand: root `pytest` 116 pass / 2 skipped, `npm test` 146 pass.
+
+**Next focus candidates:** a quick in-browser pass on the slider layout in `?perform=1` (and a TD `send_params` cue), STE / soft-quant work inside the codec `train_step`, `freeze` with its own review (who un-freezes if TD drops?).
+
 ## 2026-11-05 (09:30 ET — daily commit)
 
 **Landed:** the first "next" item from 11-04 — TD can now drive the feed / kill sliders through the reserved `setParams` command, after its own limits review.
