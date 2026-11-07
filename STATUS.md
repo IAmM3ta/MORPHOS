@@ -2,6 +2,17 @@
 
 RedBot daily cadence notes for `IAmM3ta/MORPHOS`. Newest first.
 
+## 2026-11-07 (09:30 ET — daily commit)
+
+**Landed:** the third "next" candidate from 11-05 / 11-06 — `freeze` got its own limits review, written up before any code so the next pass starts from agreed rules.
+
+- `docs/morphogen-redteam/FREEZE-REVIEW.md` (new): why `freeze` differs from `preset` / `setParams` (its failure mode is a still screen that looks like a crash), the facts it relies on (checked on `main` this run: `ws.onclose` moves `open` → `reconnecting` with 500 ms–15 s backoff, every fresh ack resets gate / tally / `tdRtt()`, TD's 1 Hz `status_tick` heartbeat, idempotent `loop.start` / `stop` with no catch-up replay, local press already restarts the loop), and eight proposed rules: freeze is a lease `{ms}` in [250, 10 000] refused not clamped, explicit `thaw`, leaving `open` thaws before reconnect is scheduled, a fresh ack never inherits a freeze, local input wins, ~3 s of TD silence thaws, visible status / tally / debug state, no new trust. Mermaid state diagram of every exit path, the fixture → browser → TD → tests → docs order of work, and three open questions (render while frozen, Hum behaviour, the 10 s ceiling).
+- `morphogen-v2/src/sync/tdCommand.ts`: header comment only — the "still refused" note now summarises the review and points at the doc.
+- `docs/morphogen-redteam/TD-COMMANDS.md`: the refused list links the review; `freeze` stays named in backticks so the `tdCommandsDoc` "reserved commands are refused" test still holds. `docs/MORPHOS-AND-MORPHOGEN.md`: red-team table row for the new file. README changelog entry.
+- Not run this pass: `scripts/ci_local.sh` (header comment + docs only, no build box in this run), so the 11-05 counts stand: root `pytest` 116 pass / 2 skipped, `npm test` 146 pass.
+
+**Next focus candidates:** implement the `freeze` lease fixture-first per the review, a quick in-browser pass on the slider layout in `?perform=1` (and a TD `send_params` cue), STE / soft-quant work inside the codec `train_step`.
+
 ## 2026-11-06 (09:30 ET — daily commit)
 
 **Landed:** a docs-only pass — `docs/MORPHOS-AND-MORPHOGEN.md` was a 12-line table, and after seven weeks of daily commits a new reader had no map of where the codec, the Morphogen v2 modules, the TD side and the red-team notes live.
