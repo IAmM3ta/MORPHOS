@@ -43,6 +43,11 @@
  *
  * Still refused (parse → null): "freeze". Stopping the sim remotely needs its
  * own review (who un-freezes it if TD drops?), so the door stays shut for now.
+ * That review is written up in docs/morphogen-redteam/FREEZE-REVIEW.md
+ * (2026-11-07): freeze becomes a short lease ({ms} ≤ 10 s, refused not
+ * clamped) that the *browser* ends — on expiry, an explicit thaw, any status
+ * change away from 'open', local input, or ~3 s of TD silence — so a dropped
+ * TD can never leave the Field stuck. Fixture rows come first, then this parser.
  *
  * Trust model: frames only reach this parser after TD acked our authed hello
  * (TdClient checks status === 'open'), but they are still treated as untrusted

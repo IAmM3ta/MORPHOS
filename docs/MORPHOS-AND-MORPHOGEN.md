@@ -51,6 +51,7 @@ A reading map for someone arriving cold. Paths are relative to the repo root.
 | `static-findings.md`, `elliot-protocol-findings.md`, `live-ux-findings.md` | The three evidence streams behind the brief. |
 | `SYNC-AUTH.md` | The hello → ack handshake, reconnect backoff, status chip and URL allowlist. |
 | `TD-COMMANDS.md` | The TD → app command channel: frames, limits, troubleshooting. |
+| `FREEZE-REVIEW.md` | Design review for the still-refused `freeze` command: lease rules, every exit path, and the fixture-first order of work. |
 
 ## Checking your work
 

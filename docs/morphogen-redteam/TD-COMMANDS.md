@@ -82,7 +82,9 @@ Accepted (v1):
     from a slowed CHOP (≤ 10/s), never every frame.
 
 Refused (parse returns `null`, frame dropped, session untouched):
-`freeze` (reserved until it gets its own limits review), out-of-range or
+`freeze` (still reserved; its limits review — a browser-ended lease, so a
+dropped TD can't leave the Field stuck — is in
+[FREEZE-REVIEW.md](FREEZE-REVIEW.md) and lands fixture-first), out-of-range or
 extra-key `setParams` frames,
 any `v` other than `1`, missing `cmd`, arrays, non-JSON, malformed preset ids,
 and anything over the size cap.
