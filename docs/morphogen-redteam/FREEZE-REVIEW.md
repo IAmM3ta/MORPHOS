@@ -7,6 +7,16 @@ returns `null` for `{v:1, cmd:"freeze"}` today, and
 the sim if TD drops?" — so the next implementation pass starts from agreed
 rules instead of re-deriving them. No code changed with this note._
 
+_Progress 2026-11-08: step 2's pure helper has landed on its own —
+`morphogen-v2/src/sync/freezeLease.ts` (`createFreezeLease`, `isValidFreezeMs`,
+`MIN_FREEZE_MS` 250 / `MAX_FREEZE_MS` 10 000 / `FREEZE_SILENCE_MS` 3 000,
+`describeFreeze` / `describeThaw`) with 12 node tests in
+`tests/freezeLease.test.mjs`. It is not imported by `main.ts` and the parser
+still refuses `freeze`, so runtime behaviour is unchanged. Still to do: the
+fixture rows (step 1), `parseTdCommand` cases and `main.ts` / `TdClient`
+wiring (rest of step 2), the TD twin (step 3) and the integration tests in
+step 4._
+
 ## Why `freeze` is different from `preset` and `setParams`
 
 `preset` and `setParams` are **idempotent and self-healing**: if TD vanishes

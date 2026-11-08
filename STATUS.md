@@ -2,6 +2,18 @@
 
 RedBot daily cadence notes for `IAmM3ta/MORPHOS`. Newest first.
 
+## 2026-11-08 (09:30 ET — daily commit)
+
+**Landed:** the first slice of implementing `freeze` per FREEZE-REVIEW.md — the pure lease helper, built and tested on its own before anything is wired, so the exits exist before the entry does.
+
+- `morphogen-v2/src/sync/freezeLease.ts` (new): `MIN_FREEZE_MS` 250, `MAX_FREEZE_MS` 10 000, `FREEZE_SILENCE_MS` 3 000; `isValidFreezeMs` (inclusive integer range); `createFreezeLease(silenceMs?)` with `start` (refused, not clamped; bad renewals leave the current lease alone; renew restarts from now), `thaw(reason)` (true only if a lease was held; no-op thaw keeps the last reason), `frozen`, `remaining` (capped at the granted length so a backwards clock can't extend it; null for a NaN clock), `check(now, lastFrameAt)` (→ `expired` / `silence` / null; silence measured from the newer of lease start and last frame) and `snapshot()` `{until, reason}`; `describeFreeze` (rounds up, never "0 s left") and `describeThaw`. Header comment maps each part to the review's rule numbers.
+- `morphogen-v2/tests/freezeLease.test.mjs` (new, 12 cases) and `freezeLease` added to the esbuild test bundle in `package.json`.
+- Docs: FREEZE-REVIEW.md progress note (what landed, what's left), docs map row for `src/sync/`, README changelog.
+- Not wired: `main.ts` doesn't import it and `parseTdCommand` still refuses `freeze` (the `tdCommandsDoc` refusal test is untouched).
+- Verified: `npm test` 158 pass (was 146); `tsc --noEmit` clean; no-WebGL check OK; root `pytest` 116 pass / 2 skipped (unchanged). Not tried in a browser or against TouchDesigner.
+
+**Next focus candidates:** `freeze` step 1 (fixture rows) plus `parseTdCommand` cases and `main.ts` / `TdClient` wiring, the TD twin (`make_freeze_command` / `send_freeze`), a quick in-browser pass on the slider layout in `?perform=1`, STE / soft-quant work inside the codec `train_step`.
+
 ## 2026-11-07 (09:30 ET — daily commit)
 
 **Landed:** the third "next" candidate from 11-05 / 11-06 — `freeze` got its own limits review, written up before any code so the next pass starts from agreed rules.

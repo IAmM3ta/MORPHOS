@@ -37,7 +37,7 @@ A reading map for someone arriving cold. Paths are relative to the repo root.
 | `src/audio/` | The Hum audio engine. |
 | `src/app/` | The fixed-timestep frame loop. |
 | `src/ui/` | Panels, HUD, keyboard shortcuts, pointer seeding, Field feed / kill sliders. |
-| `src/sync/` | The TouchDesigner (TD) Sync client, URL checks and the TD → app command parser. |
+| `src/sync/` | The TouchDesigner (TD) Sync client, URL checks, the TD → app command parser, and `freezeLease.ts` (the not-yet-wired lease helper for a future `freeze` command). |
 | `src/main.ts` | Wires all of the above together. |
 | `td/` | Reference TouchDesigner-side Python: the auth gate, command builders and callbacks. |
 | `tests/` | Node tests (`npm test`) and the shared `fixtures/td-commands.v1.json` contract file. |
