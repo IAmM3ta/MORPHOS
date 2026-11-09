@@ -17,6 +17,14 @@ fixture rows (step 1), `parseTdCommand` cases and `main.ts` / `TdClient`
 wiring (rest of step 2), the TD twin (step 3) and the integration tests in
 step 4._
 
+_Progress 2026-11-09: step 3's pure builders have landed —
+`td/morphogen_sync_commands.py` has `MIN_FREEZE_MS` / `MAX_FREEZE_MS` (pinned
+to `freezeLease.ts` by a pytest), `make_freeze_command(ms)` and
+`make_thaw_command()`, with the same refuse-not-clamp rules. `send_freeze` /
+`send_thaw` and the `freeze` row in `morphogen_cmds` wait until the browser
+accepts the frame; `test_no_freeze_sender_until_the_browser_accepts_it`
+enforces that order and should be deleted in that change._
+
 ## Why `freeze` is different from `preset` and `setParams`
 
 `preset` and `setParams` are **idempotent and self-healing**: if TD vanishes

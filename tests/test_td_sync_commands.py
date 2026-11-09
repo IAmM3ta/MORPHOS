@@ -465,3 +465,62 @@ def test_send_params_goes_to_authed_clients_and_is_tallied(td):
     with pytest.raises(ValueError):
         cb.send_params(dat, feed=0.5)  # validated before the pacer, even when nothing would go
     assert cb._stats.params == 1
+
+
+# --- freeze / thaw builders (2026-11-09, FREEZE-REVIEW.md step 3a) ----------
+# Builders only: the browser still refuses `freeze`, so nothing sends these.
+
+
+def test_freeze_limits_match_the_browser_lease_helper():
+    # The TD constants must equal the ones in freezeLease.ts, or TD would build
+    # frames the browser refuses (or refuse frames it would accept).
+    import re
+    from morphogen_sync_commands import MAX_FREEZE_MS, MIN_FREEZE_MS
+
+    ts_path = os.path.join(TD_DIR, "..", "src", "sync", "freezeLease.ts")
+    with open(ts_path, encoding="utf-8") as f:
+        ts = f.read()
+
+    def ts_const(name):
+        m = re.search(rf"export const {name} = ([\d_]+);", ts)
+        assert m, f"{name} not found in freezeLease.ts"
+        return int(m.group(1).replace("_", ""))
+
+    assert MIN_FREEZE_MS == ts_const("MIN_FREEZE_MS") == 250
+    assert MAX_FREEZE_MS == ts_const("MAX_FREEZE_MS") == 10_000
+
+
+def test_make_freeze_command_accepts_integer_ms_inside_the_range():
+    from morphogen_sync_commands import MAX_FREEZE_MS, MIN_FREEZE_MS, make_freeze_command
+
+    assert make_freeze_command(500) == '{"v":1,"cmd":"freeze","ms":500}'
+    # Both ends are inclusive, like isValidFreezeMs.
+    assert json.loads(make_freeze_command(MIN_FREEZE_MS))["ms"] == MIN_FREEZE_MS
+    assert json.loads(make_freeze_command(MAX_FREEZE_MS))["ms"] == MAX_FREEZE_MS
+    # An integral float is an integer to JS too; it is sent as a plain int.
+    assert make_freeze_command(2000.0) == '{"v":1,"cmd":"freeze","ms":2000}'
+
+
+def test_make_freeze_command_refuses_instead_of_clamping():
+    from morphogen_sync_commands import make_freeze_command
+
+    # Same refusals the review lists for the browser: 0 / 249 / 10 001 / 1.5 /
+    # "500" / None, plus bool, NaN and infinity.
+    for bad in (0, 249, 10_001, 1.5, 500.5, "500", None, True, float("nan"), float("inf"), -500):
+        with pytest.raises(ValueError):
+            make_freeze_command(bad)
+
+
+def test_make_thaw_command_is_a_bare_frame():
+    from morphogen_sync_commands import make_thaw_command
+
+    assert make_thaw_command() == '{"v":1,"cmd":"thaw"}'
+
+
+def test_no_freeze_sender_until_the_browser_accepts_it():
+    # Guard for review step order: TD must not gain a way to send freeze while
+    # parseTdCommand still refuses it. Delete this test in the same change that
+    # adds send_freeze, the fixture rows and the browser parser cases.
+    assert not hasattr(cb, "send_freeze")
+    assert not hasattr(cb, "send_thaw")
+    assert not hasattr(SendStats(), "freeze")

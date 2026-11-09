@@ -2,6 +2,18 @@
 
 RedBot daily cadence notes for `IAmM3ta/MORPHOS`. Newest first.
 
+## 2026-11-09 (09:30 ET — daily commit)
+
+**Landed:** step 3a of FREEZE-REVIEW.md — the TouchDesigner side of `freeze` / `thaw`, as pure frame builders only, so both twins now agree on the lease limits before either side can act on them.
+
+- `morphogen-v2/td/morphogen_sync_commands.py`: `MIN_FREEZE_MS` 250 / `MAX_FREEZE_MS` 10 000 (keep-in-sync block pointing at `freezeLease.ts`); `_freeze_ms` mirrors `isValidFreezeMs` (int, or integral float sent as int; bool / str / None / NaN / inf / fractional / out-of-range raise, never clamped); `make_freeze_command(ms)` → `{"v":1,"cmd":"freeze","ms":N}`, `make_thaw_command()` → `{"v":1,"cmd":"thaw"}`. Module docstring and a section comment say why there is no sender yet.
+- `tests/test_td_sync_commands.py`: 5 new tests — limits read from `freezeLease.ts` source, inclusive range ends, the review's refusal list (0 / 249 / 10 001 / 1.5 / "500" / None plus bool, NaN, inf), bare thaw frame, and a step-order guard that fails if `send_freeze` / `send_thaw` / a `freeze` tally appear before the browser accepts the command.
+- Docs: FREEZE-REVIEW.md progress note, README changelog.
+- Not changed: the shared fixture (step 1), `parseTdCommand` (still refuses `freeze`), `main.ts`, TD callbacks. Runtime behaviour on both sides is unchanged.
+- Verified with `scripts/ci_local.sh all`: root `pytest` 121 pass / 2 skipped (was 116); `npm test` 158 pass; `tsc --noEmit` clean; no-WebGL check OK. Not tried against a live TouchDesigner or browser.
+
+**Next focus candidates:** `freeze` step 1 (fixture rows: `freeze_ms_range`, built frames, builder rejects, browser refusals) together with the `parseTdCommand` cases, then `main.ts` / `TdClient` wiring and `send_freeze`; a quick in-browser pass on the slider layout in `?perform=1`; STE / soft-quant work inside the codec `train_step`.
+
 ## 2026-11-08 (09:30 ET — daily commit)
 
 **Landed:** the first slice of implementing `freeze` per FREEZE-REVIEW.md — the pure lease helper, built and tested on its own before anything is wired, so the exits exist before the entry does.

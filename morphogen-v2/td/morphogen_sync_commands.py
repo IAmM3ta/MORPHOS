@@ -24,7 +24,8 @@ Rules mirror the browser so TD never sends a frame the app would silently drop:
     REMOTE_PARAM_RANGE and rounded to 4 decimals; out-of-range values raise
     here instead of being clamped, because the browser refuses (never clamps)
     them too. `du` / `dv` are not offered: they bound the sim's stable time
-    step. `freeze` is still not offered: the browser refuses it.
+    step. `freeze` / `thaw` builders exist (2026-11-09, below) but there is
+    no `send_freeze` yet: the browser still refuses `freeze`.
   * The browser rate-limits commands (10/s, burst 5); `CommandPacer` applies
     the same token bucket on the TD side so a cue stack can't have frames
     silently discarded at the other end.
@@ -82,6 +83,12 @@ COMMAND_BURST = 5.0
 # TUNE_RANGE, inside the kernel's PARAM_LIMITS), rounded to 4 decimals.
 REMOTE_PARAM_RANGE = {"feed": (0.01, 0.09), "kill": (0.045, 0.07)}
 REMOTE_PARAM_DECIMALS = 4
+# --- keep in sync with morphogen-v2/src/sync/freezeLease.ts ----------------
+# freeze lease limits (2026-11-09, FREEZE-REVIEW.md rule 1): `ms` is an integer
+# in this inclusive range, refused (never clamped) outside it. Pinned against
+# the TypeScript constants by tests/test_td_sync_commands.py.
+MIN_FREEZE_MS = 250
+MAX_FREEZE_MS = 10_000
 # --- keep in sync with PRESET_ORDER in morphogen-v2/src/ui/field.ts --------
 PRESET_IDS = (
     "mitosis",
@@ -167,6 +174,56 @@ def make_setparams_command(feed: Any = None, kill: Any = None) -> str:
     if len(msg) == 2:
         raise ValueError("setParams needs feed and/or kill")
     return _dump(msg)
+
+
+# --- freeze / thaw builders (2026-11-09, FREEZE-REVIEW.md step 3a) ---------
+# Pure frame builders only. They exist so the TD twin is ready (and tested)
+# before the browser starts accepting `freeze`, but nothing sends them yet:
+# there is deliberately no send_freeze / send_thaw and no `freeze` row in
+# SendStats until the browser's parseTdCommand accepts the frame and the
+# step-4 safety tests (expiry, socket close, fresh ack, local input, silence)
+# exist. Until then the browser would drop these frames as refused commands.
+
+
+def _freeze_ms(ms: Any) -> int:
+    """Validate a lease length exactly like isValidFreezeMs in freezeLease.ts.
+
+    Accepts an int, or a float with no fractional part (JS `Number.isInteger`
+    says 500.0 is an integer too), and returns a plain int so the frame text is
+    `"ms":500`, never `"ms":500.0`. bool is refused even though it is an int
+    subclass in Python, because `true` is not a number on the browser side.
+    """
+    if isinstance(ms, bool) or not isinstance(ms, (int, float)):
+        raise ValueError("freeze ms must be an integer number of milliseconds")
+    if isinstance(ms, float):
+        if not math.isfinite(ms) or not ms.is_integer():
+            raise ValueError("freeze ms must be an integer number of milliseconds")
+        ms = int(ms)
+    if ms < MIN_FREEZE_MS or ms > MAX_FREEZE_MS:
+        raise ValueError(
+            f"freeze ms {ms!r} outside {MIN_FREEZE_MS}..{MAX_FREEZE_MS} "
+            "(the browser refuses, it does not clamp; re-send freeze to hold longer)"
+        )
+    return ms
+
+
+def make_freeze_command(ms: Any) -> str:
+    """Serialize `{v:1, cmd:"freeze", ms}` — ask the browser to hold the field.
+
+    A freeze is a lease, never a latch (review rule 1): the browser thaws on its
+    own after `ms`, so a cue that wants a longer hold re-sends this before the
+    lease runs out (each valid freeze renews from "now" on the browser clock).
+    Raises ValueError for anything the browser would refuse.
+    """
+    return _dump({"v": 1, "cmd": "freeze", "ms": _freeze_ms(ms)})
+
+
+def make_thaw_command() -> str:
+    """Serialize `{v:1, cmd:"thaw"}` — end any lease at once (review rule 2).
+
+    Harmless when nothing is frozen; the browser treats it as a no-op.
+    """
+    return _dump({"v": 1, "cmd": "thaw"})
 
 
 def _status_ms(name: str, v: Any) -> Optional[float]:
