@@ -25,6 +25,19 @@ to `freezeLease.ts` by a pytest), `make_freeze_command(ms)` and
 accepts the frame; `test_no_freeze_sender_until_the_browser_accepts_it`
 enforces that order and should be deleted in that change._
 
+_Progress 2026-11-10: step 1 is staged in the shared fixture as a separate
+`freeze_staged` block in `tests/fixtures/td-commands.v1.json` — `freeze_ms_range`
+(250 / 10 000), five TD-built frames (`freeze` 250 / 1500 / 2000.0→2000 /
+10 000 and a bare `thaw`), ten builder rejects, eight browser refusals and the
+`ms` values the lease must refuse. Both suites read it: pytest checks TD's
+bytes, rejects and limits; `tdContract.test.mjs` checks the range against
+`freezeLease.ts` and that **every** staged frame, well-formed or not, is still
+refused by `parseTdCommand`. That last test is the browser half of the
+step-order guard. Lifting the refusal = move the `built` rows (with a `parsed`
+shape) into the top-level `built` list, drop the plain `freeze` row from
+`browser_refuses`, delete both guard tests — in one change, alongside step 2's
+wiring and step 4's tests._
+
 ## Why `freeze` is different from `preset` and `setParams`
 
 `preset` and `setParams` are **idempotent and self-healing**: if TD vanishes

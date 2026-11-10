@@ -1,5 +1,5 @@
 {
-  "_comment": "Golden cross-language contract for the Morphogen v2 TD -> app control plane (v1). Read by BOTH tests/tdContract.test.mjs (browser parser + gate in src/sync/tdCommand.ts) and ../tests/test_td_sync_contract.py (TD builders + pacer in td/morphogen_sync_commands.py). If you change either side's rules, update this file and both suites must still pass. Added 2026-10-23; status frame (TD rtt -> browser) rows added 2026-10-29; setParams (feed / kill only, inside remote_param_range, refused not clamped) rows added 2026-11-05.",
+  "_comment": "Golden cross-language contract for the Morphogen v2 TD -> app control plane (v1). Read by BOTH tests/tdContract.test.mjs (browser parser + gate in src/sync/tdCommand.ts) and ../tests/test_td_sync_contract.py (TD builders + pacer in td/morphogen_sync_commands.py). If you change either side's rules, update this file and both suites must still pass. Added 2026-10-23; status frame (TD rtt -> browser) rows added 2026-10-29; setParams (feed / kill only, inside remote_param_range, refused not clamped) rows added 2026-11-05; freeze_staged (freeze / thaw, TD-built but still browser-refused) added 2026-11-10.",
   "version": 1,
   "remote_param_range": { "feed": [0.01, 0.09], "kill": [0.045, 0.07], "decimals": 4 },
   "built": [
@@ -63,6 +63,40 @@
     "{\"v\":1,\"cmd\":\"status\",\"rtt\":{\"last_ms\":null,\"median_ms\":null,\"samples\":1.5,\"outstanding\":0,\"lost\":0}}",
     "{\"v\":1,\"cmd\":\"status\",\"rtt\":{\"last_ms\":null,\"median_ms\":null,\"samples\":0,\"outstanding\":0}}"
   ],
+  "freeze_staged": {
+    "_comment": "FREEZE-REVIEW.md step 1, staged 2026-11-10. TD builders (make_freeze_command / make_thaw_command) already exist, but the browser still REFUSES freeze and thaw: parseTdCommand returns null for every frame in this block, including the well-formed ones in built. Lifting the refusal means moving built rows into the top-level built list (with their parsed shape), dropping the plain freeze row from browser_refuses, and deleting the 'staged frames stay refused' tests on both sides, all in one change. ms limits must equal MIN_FREEZE_MS / MAX_FREEZE_MS in src/sync/freezeLease.ts and td/morphogen_sync_commands.py.",
+    "freeze_ms_range": { "min": 250, "max": 10000 },
+    "built": [
+      { "build": ["freeze", 250], "raw": "{\"v\":1,\"cmd\":\"freeze\",\"ms\":250}" },
+      { "build": ["freeze", 1500], "raw": "{\"v\":1,\"cmd\":\"freeze\",\"ms\":1500}" },
+      { "build": ["freeze", 2000.0], "raw": "{\"v\":1,\"cmd\":\"freeze\",\"ms\":2000}" },
+      { "build": ["freeze", 10000], "raw": "{\"v\":1,\"cmd\":\"freeze\",\"ms\":10000}" },
+      { "build": ["thaw", null], "raw": "{\"v\":1,\"cmd\":\"thaw\"}" }
+    ],
+    "builder_rejects": [
+      ["freeze", 0],
+      ["freeze", 249],
+      ["freeze", 10001],
+      ["freeze", 1.5],
+      ["freeze", "500"],
+      ["freeze", null],
+      ["freeze", true],
+      ["freeze", "NaN"],
+      ["freeze", "Infinity"],
+      ["freeze", -500]
+    ],
+    "browser_refuses": [
+      "{\"v\":1,\"cmd\":\"freeze\",\"ms\":0}",
+      "{\"v\":1,\"cmd\":\"freeze\",\"ms\":249}",
+      "{\"v\":1,\"cmd\":\"freeze\",\"ms\":10001}",
+      "{\"v\":1,\"cmd\":\"freeze\",\"ms\":1.5}",
+      "{\"v\":1,\"cmd\":\"freeze\",\"ms\":\"500\"}",
+      "{\"v\":1,\"cmd\":\"freeze\",\"ms\":null}",
+      "{\"v\":1,\"cmd\":\"freeze\",\"ms\":500,\"until\":9999}",
+      "{\"v\":1,\"cmd\":\"thaw\",\"ms\":500}"
+    ],
+    "lease_rejects_ms": [0, 249, 10001, 1.5, "500", null, true, -500]
+  },
   "rtt_lines": {
     "_comment": "Status rtt fields (snake_case, as sent) -> the exact line both describe_rtt_fields (TD) and describeTdRtt (browser) must print. 8.25 is an exact binary tie: TD rounds it up to match JS toFixed. Added 2026-10-29.",
     "rows": [

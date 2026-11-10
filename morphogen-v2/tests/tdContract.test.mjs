@@ -18,6 +18,7 @@ import {
 } from '../.test-build/tdCommand.mjs';
 import { TUNE_RANGE, TUNE_STEP } from '../.test-build/fieldTune.mjs';
 import { PARAM_LIMITS } from '../.test-build/grayScott.mjs';
+import { MIN_FREEZE_MS, MAX_FREEZE_MS, isValidFreezeMs } from '../.test-build/freezeLease.mjs';
 
 const fixture = JSON.parse(readFileSync(new URL('./fixtures/td-commands.v1.json', import.meta.url), 'utf8'));
 
@@ -66,5 +67,33 @@ test('contract: setParams range = fixture = slider travel, inside PARAM_LIMITS (
     assert.deepEqual([...REMOTE_PARAM_RANGE[knob]], [...TUNE_RANGE[knob]], `${knob} vs TUNE_RANGE`);
     const [lo, hi] = REMOTE_PARAM_RANGE[knob];
     assert.ok(lo >= PARAM_LIMITS[knob][0] && hi <= PARAM_LIMITS[knob][1], `${knob} inside PARAM_LIMITS`);
+  }
+});
+
+// ---- freeze / thaw, staged (FREEZE-REVIEW.md step 1, 2026-11-10) ----------
+// The fixture now pins the freeze frames TD can already build, but the browser
+// must keep refusing ALL of them until main.ts / TdClient wiring and the
+// review's step-4 tests exist. The second test below is the browser-side half
+// of the step-order guard (TD's half is test_no_freeze_sender_until_the_browser_
+// accepts_it); delete both in the change that lifts the refusal.
+test('contract: freeze_staged ms range = freezeLease.ts limits (2026-11-10)', () => {
+  const want = fixture.freeze_staged.freeze_ms_range;
+  assert.equal(MIN_FREEZE_MS, want.min);
+  assert.equal(MAX_FREEZE_MS, want.max);
+  for (const row of fixture.freeze_staged.built) {
+    const frame = JSON.parse(row.raw);
+    if (frame.cmd === 'freeze') assert.ok(isValidFreezeMs(frame.ms), `lease would accept ${row.raw}`);
+  }
+  for (const ms of fixture.freeze_staged.lease_rejects_ms) {
+    assert.equal(isValidFreezeMs(ms), false, `lease must refuse ${JSON.stringify(ms)}`);
+  }
+});
+
+test('contract: staged freeze / thaw frames stay refused until the wiring lands (2026-11-10)', () => {
+  for (const row of fixture.freeze_staged.built) {
+    assert.equal(parseTdCommand(row.raw), null, `still refused: ${row.raw}`);
+  }
+  for (const raw of fixture.freeze_staged.browser_refuses) {
+    assert.equal(parseTdCommand(raw), null, raw);
   }
 });

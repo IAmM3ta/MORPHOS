@@ -29,6 +29,10 @@ from morphogen_sync_commands import (  # noqa: E402
     make_status_command,
     make_preset_command,
     make_setparams_command,
+    make_freeze_command,
+    make_thaw_command,
+    MAX_FREEZE_MS,
+    MIN_FREEZE_MS,
 )
 
 with open(os.path.join(ROOT, "tests", "fixtures", "td-commands.v1.json"), encoding="utf-8") as fh:
@@ -52,6 +56,10 @@ def _build(spec):
     if kind == "setParams":
         feed, kill = [float(a) if a in ("NaN", "Infinity") else a for a in arg]
         return make_setparams_command(feed, kill)
+    if kind == "freeze":
+        return make_freeze_command(float(arg) if arg in ("NaN", "Infinity") else arg)
+    if kind == "thaw":
+        return make_thaw_command()
     raise AssertionError(f"unknown build kind {kind!r}")
 
 
@@ -109,3 +117,26 @@ def test_remote_param_range_matches_fixture():
     want = FIXTURE["remote_param_range"]
     assert {k: list(v) for k, v in REMOTE_PARAM_RANGE.items()} == {"feed": want["feed"], "kill": want["kill"]}
     assert REMOTE_PARAM_DECIMALS == want["decimals"]
+
+
+# ---- freeze / thaw, staged (FREEZE-REVIEW.md step 1, 2026-11-10) ----------
+# The browser still refuses these frames (see the "staged ... stay refused"
+# test in tdContract.test.mjs); here we only pin that TD builds exactly the
+# bytes the fixture records and refuses exactly what the lease would refuse.
+STAGED = FIXTURE["freeze_staged"]
+
+
+def test_freeze_ms_range_matches_fixture():
+    want = STAGED["freeze_ms_range"]
+    assert (MIN_FREEZE_MS, MAX_FREEZE_MS) == (want["min"], want["max"])
+
+
+@pytest.mark.parametrize("row", STAGED["built"], ids=lambda r: r["raw"])
+def test_staged_freeze_builder_emits_exact_bytes(row):
+    assert _build(row["build"]) == row["raw"]
+
+
+@pytest.mark.parametrize("spec", STAGED["builder_rejects"], ids=repr)
+def test_staged_freeze_builder_rejects(spec):
+    with pytest.raises(ValueError):
+        _build(spec)

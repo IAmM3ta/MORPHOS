@@ -2,6 +2,18 @@
 
 RedBot daily cadence notes for `IAmM3ta/MORPHOS`. Newest first.
 
+## 2026-11-10 (09:30 ET — daily commit)
+
+**Landed:** `freeze` step 1 (fixture rows), staged so it can land before the browser accepts the command — the first item on the 11-09 next-focus list, minus the parser change.
+
+- `morphogen-v2/tests/fixtures/td-commands.v1.json`: new `freeze_staged` block (kept out of the top-level `built` / `browser_refuses` lists on purpose, because the browser contract test expects every top-level `built` row to parse). Holds `freeze_ms_range` {250, 10 000}, 5 TD-built frames (`ms` 250 / 1500 / 2000.0 sent as 2000 / 10 000, bare `thaw`), 10 builder rejects (0, 249, 10 001, 1.5, "500", null, true, NaN, Infinity, −500), 8 browser refusals (bad `ms`, extra `until` key, `thaw` with an `ms`) and `lease_rejects_ms`. Its `_comment` spells out how to lift the refusal in one change. The plain "freeze is refused" row stays where it is.
+- `tests/test_td_sync_contract.py`: `_build` learns `freeze` / `thaw`; 16 new cases — range = fixture, exact bytes for each staged frame, every builder reject raises `ValueError`.
+- `morphogen-v2/tests/tdContract.test.mjs`: 2 new tests — fixture range = `MIN_FREEZE_MS` / `MAX_FREEZE_MS` in `freezeLease.ts` (and `isValidFreezeMs` agrees on accepts / rejects), and every staged frame is still refused by `parseTdCommand` (browser half of the step-order guard; TD's half is `test_no_freeze_sender_until_the_browser_accepts_it`).
+- Docs: FREEZE-REVIEW.md progress note, README changelog. No `src/` or `td/` runtime change.
+- Verified with `scripts/ci_local.sh all` (`PYTEST=` venv pytest, since the box python has none): root `pytest` 137 pass / 2 skipped (was 121); `npm test` 160 pass (was 158); `tsc --noEmit` clean; no-WebGL check OK. Not tried against a live TouchDesigner or browser.
+
+**Next focus candidates:** lift the refusal — `parseTdCommand` freeze / thaw cases, `main.ts` / `TdClient` wiring of `createFreezeLease`, `send_freeze` / `send_thaw` + `morphogen_cmds` row, the step-4 tests, then TD-COMMANDS.md — as one reviewed change; a quick in-browser pass on the slider layout in `?perform=1`; STE / soft-quant work inside the codec `train_step`.
+
 ## 2026-11-09 (09:30 ET — daily commit)
 
 **Landed:** step 3a of FREEZE-REVIEW.md — the TouchDesigner side of `freeze` / `thaw`, as pure frame builders only, so both twins now agree on the lease limits before either side can act on them.
