@@ -38,6 +38,20 @@ shape) into the top-level `built` list, drop the plain `freeze` row from
 `browser_refuses`, delete both guard tests — in one change, alongside step 2's
 wiring and step 4's tests._
 
+_Progress 2026-11-11: step 4's behaviour tests now exist, against a pure
+binding rather than `main.ts` — `morphogen-v2/src/sync/freezeControl.ts`
+(`createFreezeControl({halt, resume, onThaw})`) owns *who restarts the loop and
+when*: `freeze(ms, now)` halts once (renewals don't re-halt; refused frames
+and frames before an authed `open` touch nothing), `thaw()`, `status(s)` thaws
+synchronously on leaving `open` — TdClient fires `onStatus('reconnecting')`
+before it arms the backoff timer, so the field is running before any retry —
+and on a fresh `open`, `local()` and `tick(now, lastFrameAt)` for expiry /
+silence. It only resumes a loop it halted itself. 14 cases in
+`tests/freezeControl.test.mjs`. Still unwired: the parser refuses `freeze`, and
+lifting that remains the one reviewed change described above (parser cases,
+`main.ts` calls into this binding, `send_freeze` / `send_thaw`, fixture move,
+`TD-COMMANDS.md`)._
+
 ## Why `freeze` is different from `preset` and `setParams`
 
 `preset` and `setParams` are **idempotent and self-healing**: if TD vanishes

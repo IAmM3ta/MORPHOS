@@ -2,6 +2,19 @@
 
 RedBot daily cadence notes for `IAmM3ta/MORPHOS`. Newest first.
 
+## 2026-11-11 (09:30 ET — daily commit)
+
+**Landed:** step-4 groundwork for `freeze` — the review's "tests that must exist before the refusal is lifted", written against a pure binding so lifting the refusal later is mostly wiring.
+
+- `morphogen-v2/src/sync/freezeControl.ts` (new): `createFreezeControl({halt, resume, onThaw?}, lease?)` → `freeze(ms, now)` / `thaw()` / `status(s)` / `local()` / `tick(now, lastFrameAt)` / `holding()` / `lease`. Halts once per freeze (renewals don't re-halt); refused `ms` and frames before an authed `open` change nothing; any status other than `open` while frozen thaws with reason `disconnect` synchronously (TdClient calls `onStatus('reconnecting')` before arming its retry timer, checked in `tdClient.ts`); a transition into `open` drops any leftover lease; `local()` thaws with `local`; `tick` resumes on `expired` / `silence`. Only resumes a loop it halted itself, so a thaw can't restart a loop the performer or teardown stopped. Header comment maps each part to the review's rule numbers.
+- `morphogen-v2/tests/freezeControl.test.mjs` (new, 14 cases) with fake hooks and clock; `freezeControl` added to the esbuild test bundle.
+- `morphogen-v2/package.json`: `node --test tests/` → `node --test tests/*.test.mjs`. The box now has Node 24, where a bare directory argument is resolved as a module and `npm test` failed before running anything (pre-existing, reproduced on a clean `main`); the shell glob works the same on CI's Node 20.
+- Docs: FREEZE-REVIEW.md progress note, docs map row for `src/sync/`, README changelog.
+- Not changed: `parseTdCommand` (still refuses `freeze` / `thaw`), `main.ts`, the fixture, TD files. Runtime behaviour unchanged.
+- Verified with `scripts/ci_local.sh all` (`PYTEST=` venv pytest): root `pytest` 137 pass / 2 skipped (unchanged); `npm test` 174 pass (was 160); `tsc --noEmit` clean; no-WebGL check OK. Not tried in a browser or against TouchDesigner.
+
+**Next focus candidates:** lift the refusal as one reviewed change — `parseTdCommand` freeze / thaw cases, `main.ts` calling `createFreezeControl` (loop.stop / loop.start, TdClient onStatus, pointer / key input, a per-frame `tick`), `send_freeze` / `send_thaw` + `morphogen_cmds` row, fixture move, TD-COMMANDS.md; a quick in-browser pass on the slider layout in `?perform=1`; STE / soft-quant work inside the codec `train_step`.
+
 ## 2026-11-10 (09:30 ET — daily commit)
 
 **Landed:** `freeze` step 1 (fixture rows), staged so it can land before the browser accepts the command — the first item on the 11-09 next-focus list, minus the parser change.
