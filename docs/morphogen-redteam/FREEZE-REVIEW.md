@@ -52,6 +52,21 @@ lifting that remains the one reviewed change described above (parser cases,
 `main.ts` calls into this binding, `send_freeze` / `send_thaw`, fixture move,
 `TD-COMMANDS.md`)._
 
+_Progress 2026-11-12: wiring correction. The 11-11 note planned
+`halt` / `resume` = `loop.stop()` / `loop.start()` with "a per-frame `tick`" —
+those two can't both be true: a stopped loop has no frames, so nothing would
+call `tick` and an expired or silent freeze would never end. `createStepHold()`
+in `src/app/loop.ts` is the replacement: `halt` / `resume` = `hold.hold` /
+`hold.release`, and `onFrame` runs `steps = hold.gate(steps)` after
+`freeze.tick(now, td.commandStats().lastAt)`. The loop keeps running, so the HUD, Hum
+modulation and the tick stay alive; `paceSteps` keeps consuming time while
+held, so a thaw never bursts; `release` never calls `loop.start()`. Six cases
+in `tests/stepHold.test.mjs` drive the real loop + real binding with a fake
+rAF. One known gap, accepted: `onFrame` returns early while
+`document.hidden`, and browsers pause rAF in hidden tabs anyway, so a freeze
+that expires in a background tab is ended on the first frame after the tab
+returns. Still refused; lifting it is the same one change as before._
+
 ## Why `freeze` is different from `preset` and `setParams`
 
 `preset` and `setParams` are **idempotent and self-healing**: if TD vanishes
@@ -152,11 +167,14 @@ Following the 2026-10-23 contract rule (fixture first, then both twins):
 
 ## Open questions (for whoever picks this up)
 
-- Should a frozen field keep **rendering** (cheap, lets the HUD / Hum stay
-  alive) or skip draws entirely to save battery on phones? Proposed: keep
-  rendering; the cost is the canvas blit, not the kernel.
-- Does Hum hold its tone or fade during a freeze? Proposed: hold. A fade is an
-  artistic choice TD can make with a later command.
+- ~~Should a frozen field keep **rendering**?~~ **Answered 2026-11-12: yes.**
+  It has to, not just may: the frame loop is what calls `tick`, so freeze gates
+  kernel steps (`createStepHold`) instead of stopping the loop. The cost is the
+  canvas blit, not the kernel.
+- ~~Does Hum hold its tone or fade during a freeze?~~ **Answered 2026-11-12:
+  holds.** `hum.modulate` keeps receiving the unchanged field energy, so the
+  partials stay where they were. A fade is an artistic choice TD can make with
+  a later command.
 - Is 10 s the right ceiling? It is long enough for a dramatic hold and short
   enough that a lost renew is noticed within one musical phrase. Revisit after
   a live rehearsal.

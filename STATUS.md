@@ -2,6 +2,19 @@
 
 RedBot daily cadence notes for `IAmM3ta/MORPHOS`. Newest first.
 
+## 2026-11-12 (09:15 ET — daily commit)
+
+**Landed:** a correction to the `freeze` wiring plan, found while reading yesterday's binding against `main.ts`, with the fix built and tested before any wiring.
+
+- The problem: the 11-11 plan was `halt` / `resume` = `loop.stop()` / `loop.start()` plus "a per-frame `tick`". Only the tick notices lease expiry and TD silence, and a stopped `createFrameLoop` schedules no frames, so nothing would ever call it: an expired freeze would have left a still screen forever, which is the failure FREEZE-REVIEW.md exists to prevent. It would also have frozen the HUD and Hum modulation, and made a thaw call `loop.start()`.
+- `morphogen-v2/src/app/loop.ts`: new `createStepHold()` → `hold()` / `release()` / `held()` / `gate(steps)`. Freeze zeroes kernel steps; the loop keeps running, so draw, HUD, `hum.modulate` and the tick still run every frame. `paceSteps` keeps consuming time while held, so a thaw never bursts. `release` never starts a stopped loop. Header comment has the intended `main.ts` wiring.
+- `morphogen-v2/tests/stepHold.test.mjs` (new, 6 cases): real frame loop + real `createFreezeControl` + fake rAF — frozen loop still gets frames with 0 steps; expiry ends from the frame tick with no burst after; TD silence ends a 10 s lease; leaving `open` releases synchronously; a thaw after teardown doesn't restart the loop or schedule a frame.
+- Docs: FREEZE-REVIEW.md progress note and open questions 1 (keep rendering) and 2 (Hum holds) marked answered; README changelog. Known accepted gap noted: hidden tabs get no frames, so a freeze expiring in the background ends on the first frame after return.
+- Not changed: `parseTdCommand` (still refuses `freeze` / `thaw`), `main.ts`, `freezeControl.ts`, fixture, TD files. Runtime behaviour unchanged.
+- Verified: `npm test` 180 pass (was 174); `tsc --noEmit` clean; root `pytest` 137 pass / 2 skipped (unchanged) and no-WebGL check OK via `scripts/ci_local.sh all`. Not tried in a browser or against TouchDesigner.
+
+**Next focus candidates:** lift the refusal as one reviewed change using the step hold (parser cases, `main.ts` wiring as in the `createStepHold` header, `send_freeze` / `send_thaw`, fixture move, TD-COMMANDS.md); a quick in-browser pass on `?perform=1`; STE / soft-quant work inside the codec `train_step`.
+
 ## 2026-11-11 (09:30 ET — daily commit)
 
 **Landed:** step-4 groundwork for `freeze` — the review's "tests that must exist before the refusal is lifted", written against a pure binding so lifting the refusal later is mostly wiring.

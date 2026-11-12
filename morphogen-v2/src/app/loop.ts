@@ -139,3 +139,57 @@ export function singleFlightUnlock(unlock: () => Promise<boolean>): () => Promis
     return pending;
   };
 }
+
+/**
+ * Step hold (2026-11-12) — how `freeze` should stop the field WITHOUT stopping
+ * the frame loop. FREEZE-REVIEW.md open questions 1 and 2, answered in code.
+ *
+ * The step-4 plan wired createFreezeControl's `halt` / `resume` to
+ * `loop.stop()` / `loop.start()`. That has a hole: `control.tick(now,
+ * lastFrameAt)` is the only thing that notices lease expiry and TD silence,
+ * and the natural place to call it is onFrame — but a stopped loop has no
+ * frames, so nothing would ever call tick and an expired freeze would never
+ * end (the exact still-screen failure the review exists to prevent). Stopping
+ * the loop would also freeze the HUD read-out and the Hum modulation along
+ * with the field, and a thaw would call `loop.start()`, which must stay the
+ * performer's / ENTER gate's decision.
+ *
+ * So the hold only zeroes the kernel step count. While held, the loop keeps
+ * running at display rate: renderer.draw (a cheap blit of an unchanging
+ * field), hud.update and hum.modulate (fed the same energy, so Hum holds its
+ * tone — the review's proposed answer) and, crucially, the per-frame tick.
+ * paceSteps keeps consuming elapsed time while held, so releasing the hold
+ * never replays the frozen interval as a burst; the next frame runs its
+ * normal 0…MAX_STEPS_PER_FRAME steps.
+ *
+ * Intended wiring when the refusal is lifted (main.ts, not done yet):
+ *   const hold = createStepHold();
+ *   const freeze = createFreezeControl({ halt: hold.hold, resume: hold.release, onThaw });
+ *   onFrame: (steps, now) => { freeze.tick(now, td.commandStats().lastAt); steps = hold.gate(steps); … }
+ * `release` never starts a stopped loop, so freezeControl's "only resume
+ * what I halted" rule now holds by construction as well as by bookkeeping.
+ */
+export interface StepHold {
+  /** Start holding: gate() returns 0 until release(). Idempotent. */
+  hold(): void;
+  /** Stop holding. Idempotent; never starts or stops the frame loop itself. */
+  release(): void;
+  /** True while held. */
+  held(): boolean;
+  /** Steps to actually run this frame: 0 while held, else `steps` unchanged. */
+  gate(steps: number): number;
+}
+
+export function createStepHold(): StepHold {
+  let isHeld = false;
+  return {
+    hold() {
+      isHeld = true;
+    },
+    release() {
+      isHeld = false;
+    },
+    held: () => isHeld,
+    gate: (steps) => (isHeld ? 0 : steps),
+  };
+}
