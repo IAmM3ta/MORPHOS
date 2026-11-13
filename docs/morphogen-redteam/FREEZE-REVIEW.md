@@ -67,6 +67,17 @@ rAF. One known gap, accepted: `onFrame` returns early while
 that expires in a background tab is ended on the first frame after the tab
 returns. Still refused; lifting it is the same one change as before._
 
+_Progress 2026-11-13: clock correction. The 11-12 wiring line fed onFrame's
+rAF `now` (ms since page load) to `freeze.tick`, but `TdClient` stamps
+`commandStats().lastAt` with `Date.now` (epoch ms). With the lease started on
+either clock and checked on the other, `left()` clamps elapsed at 0 (never
+expires) and the newest-heard time sits in the future (silence never fires).
+Fix: the wiring uses `Date.now()` for both `freeze.freeze` and `freeze.tick`
+(header in `src/app/loop.ts` updated), and `freezeLease.check` gained a seat
+belt — a `now` more than the silence window behind the lease start thaws with
+`silence`, and a `lastFrameAt` ahead of `now` is ignored. Four new node tests;
+three of them fail with the guard removed. Still refused._
+
 ## Why `freeze` is different from `preset` and `setParams`
 
 `preset` and `setParams` are **idempotent and self-healing**: if TD vanishes

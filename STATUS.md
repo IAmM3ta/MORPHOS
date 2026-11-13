@@ -2,6 +2,20 @@
 
 RedBot daily cadence notes for `IAmM3ta/MORPHOS`. Newest first.
 
+## 2026-11-13 (09:15 ET — daily commit)
+
+**Landed:** a clock correction for the `freeze` wiring plan, found by checking which clock each input to the freeze tick runs on, plus a guard in the lease so the mistake can't produce a still screen.
+
+- The problem: the 11-12 wiring (`createStepHold` header) was `freeze.tick(now, td.commandStats().lastAt)` with `now` from onFrame. That `now` is the rAF timestamp (ms since page load); `lastAt` is stamped by TdClient's `Date.now` (epoch ms). Mixed like that, `left()` clamps elapsed at 0 so the lease never expires, and `max(startedAt, lastAt)` sits in the future so silence never fires. The existing tests used one fake clock for everything, so they couldn't see it.
+- `morphogen-v2/src/sync/freezeLease.ts` `check()`: a `now` more than `FREEZE_SILENCE_MS` behind the lease start ends the lease with `silence` (small backwards steps are tolerated); a `lastFrameAt` ahead of `now` is ignored rather than postponing the silence thaw. Comments explain both.
+- `morphogen-v2/src/app/loop.ts`: the `createStepHold` wiring comment now uses `Date.now()` for both `freeze.freeze(ms, …)` and `freeze.tick(…)`, and says why.
+- Tests: `tests/freezeLease.test.mjs` +2 (far-behind clock thaws, future `lastFrameAt` ignored, genuine recent frame still counts); `tests/stepHold.test.mjs` +2 (mixed clocks still release the hold; one-clock wiring times a 2 s lease correctly while TD heartbeats continue). With the guard removed, 3 of the 4 fail.
+- Docs: FREEZE-REVIEW.md progress note; README changelog.
+- Not changed: `parseTdCommand` (still refuses `freeze` / `thaw`), `main.ts`, `freezeControl.ts`, fixture, TD files. No runtime behaviour change (the lease isn't wired yet).
+- Verified with `scripts/ci_local.sh all` (`PYTEST=` venv pytest): `npm test` 184 pass (was 180); `tsc --noEmit` clean; root `pytest` 137 pass / 2 skipped (unchanged); no-WebGL check OK. Not tried in a browser or against TouchDesigner.
+
+**Next focus candidates:** lift the refusal as one reviewed change using the step hold and `Date.now()` wiring; a quick in-browser pass on `?perform=1`; STE / soft-quant work inside the codec `train_step`.
+
 ## 2026-11-12 (09:15 ET — daily commit)
 
 **Landed:** a correction to the `freeze` wiring plan, found while reading yesterday's binding against `main.ts`, with the fix built and tested before any wiring.

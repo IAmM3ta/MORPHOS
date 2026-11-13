@@ -165,7 +165,15 @@ export function singleFlightUnlock(unlock: () => Promise<boolean>): () => Promis
  * Intended wiring when the refusal is lifted (main.ts, not done yet):
  *   const hold = createStepHold();
  *   const freeze = createFreezeControl({ halt: hold.hold, resume: hold.release, onThaw });
- *   onFrame: (steps, now) => { freeze.tick(now, td.commandStats().lastAt); steps = hold.gate(steps); … }
+ *   td.onCommand: freeze → freeze.freeze(cmd.ms, Date.now())
+ *   onFrame: (steps) => { freeze.tick(Date.now(), td.commandStats().lastAt); steps = hold.gate(steps); … }
+ * ONE clock (2026-11-13 correction): the lease and its silence check must run
+ * on TdClient's clock (`opts.now`, default Date.now — the clock that stamps
+ * commandStats().lastAt), never onFrame's rAF `now`, which counts from page
+ * load. Mixing them made the lease un-expirable on paper (elapsed clamps at
+ * 0) and made silence unreachable (lastAt looks ~56 years in the future).
+ * freezeLease.check now thaws on such a clock rather than holding forever,
+ * but the wiring above is the fix; the guard is the seat belt.
  * `release` never starts a stopped loop, so freezeControl's "only resume
  * what I halted" rule now holds by construction as well as by bookkeeping.
  */

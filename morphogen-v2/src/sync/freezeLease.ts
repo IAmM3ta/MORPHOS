@@ -112,14 +112,27 @@ export function createFreezeLease(silenceMs: number = FREEZE_SILENCE_MS): Freeze
     },
     check(nowMs, lastFrameAt) {
       if (startedAt === null || !Number.isFinite(nowMs)) return null;
+      // Clock guard (2026-11-13): a `now` far BEHIND the lease start means the
+      // caller is mixing clocks (e.g. the rAF timestamp, ms since page load,
+      // against a lease started on Date.now epoch ms) or the wall clock jumped
+      // back. left() clamps elapsed at 0, so without this the lease could never
+      // expire and silence could never fire — the still-screen failure the
+      // review exists to prevent. We can't time the lease any more, so end it.
+      if (nowMs < startedAt - silence) {
+        end('silence');
+        return 'silence';
+      }
       if (left(nowMs) <= 0) {
         end('expired');
         return 'expired';
       }
       // Silence is measured from the newest of "lease (re)started" and "last TD frame":
-      // the freeze frame itself counts as traffic even if lastFrameAt lags.
+      // the freeze frame itself counts as traffic even if lastFrameAt lags. A
+      // lastFrameAt AHEAD of now is not evidence of anything (different clock,
+      // or the wall clock stepped back), so it is ignored rather than allowed
+      // to postpone the silence thaw indefinitely (2026-11-13).
       const heard =
-        typeof lastFrameAt === 'number' && Number.isFinite(lastFrameAt)
+        typeof lastFrameAt === 'number' && Number.isFinite(lastFrameAt) && lastFrameAt <= nowMs
           ? Math.max(startedAt, lastFrameAt)
           : startedAt;
       if (nowMs - heard > silence) {

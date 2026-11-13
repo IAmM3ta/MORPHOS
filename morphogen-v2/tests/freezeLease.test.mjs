@@ -125,3 +125,29 @@ test('status and debug text', () => {
   assert.equal(describeThaw('local'), 'thawed (local)');
   assert.equal(describeThaw('silence'), 'thawed (silence)');
 });
+
+// 2026-11-13 clock guard: main.ts has two clocks — rAF's `now` (ms since page
+// load) and TdClient's Date.now (which stamps commandStats().lastAt). If the
+// lease is started on one and checked on the other it must thaw, not hold forever.
+test('clock guard: a now far behind the lease start thaws (mixed clocks never hold forever)', () => {
+  const epoch = 1_763_000_000_000; // a Date.now()-sized start
+  const lease = createFreezeLease();
+  lease.start(10_000, epoch);
+  // a small backwards step (< silence window) is tolerated: still frozen
+  assert.equal(lease.check(epoch - 1000, null), null);
+  // rAF-sized clock (12 s since page load) against an epoch lease: thaw
+  assert.equal(lease.check(12_000, null), 'silence');
+  assert.deepEqual(lease.snapshot(), { until: null, reason: 'silence' });
+});
+
+test('clock guard: a lastFrameAt ahead of now cannot postpone the silence thaw', () => {
+  const lease = createFreezeLease();
+  lease.start(10_000, 1000);
+  const epochLastAt = 1_763_000_000_000; // Date.now()-stamped TD frame
+  assert.equal(lease.check(1000 + FREEZE_SILENCE_MS, epochLastAt), null, 'not silent yet (from lease start)');
+  assert.equal(lease.check(1001 + FREEZE_SILENCE_MS, epochLastAt), 'silence', 'future frame ignored');
+  // a genuine recent frame on the same clock still counts as traffic
+  const ok = createFreezeLease();
+  ok.start(10_000, 1000);
+  assert.equal(ok.check(1000 + FREEZE_SILENCE_MS + 500, 1000 + 1000), null);
+});

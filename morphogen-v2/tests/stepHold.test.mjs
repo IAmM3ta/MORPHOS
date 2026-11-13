@@ -139,3 +139,57 @@ test('a thaw after teardown never restarts a stopped loop', () => {
   assert.equal(loop.isRunning(), false);
   assert.equal(raf.pending(), 0, 'no frame scheduled behind the performer');
 });
+
+// 2026-11-13: the wiring in the createStepHold header uses ONE clock. This is
+// what happens if someone wires the rAF `now` into tick while freeze() and
+// TdClient's lastAt run on Date.now: before the freezeLease clock guard the
+// hold never released (elapsed clamps at 0, lastAt looks far in the future).
+test('mixed clocks (rAF now vs Date.now lease) still release the hold, never a still screen', () => {
+  const { raf, hold, ctl, loop, thaws, td } = rig();
+  loop.start();
+  const epoch = 1_763_000_000_000;
+  let t = run(raf, 0, 1);
+  assert.equal(ctl.freeze(10_000, epoch), true); // wrong clock on purpose
+  td.lastFrameAt = epoch; // TdClient stamps Date.now
+  t = run(raf, t, 2); // tick(now≈50 ms since load, lastAt=epoch)
+  assert.deepEqual(thaws, ['silence']);
+  assert.equal(hold.held(), false);
+});
+
+test('one clock (the header wiring): Date.now-style clock times the lease correctly', () => {
+  const raf = fakeRaf();
+  const hold = createStepHold();
+  const thaws = [];
+  const ctl = createFreezeControl({ halt: hold.hold, resume: hold.release, onThaw: (r) => thaws.push(r) });
+  let wall = 1_763_000_000_000; // stands in for Date.now, advanced with each frame
+  const td = { lastAt: null };
+  const loop = createFrameLoop({
+    requestFrame: raf.requestFrame,
+    cancelFrame: raf.cancelFrame,
+    onFrame: (steps) => {
+      ctl.tick(wall, td.lastAt);
+      hold.gate(steps);
+    },
+  });
+  ctl.status('open');
+  loop.start();
+  let t = 0;
+  const frame = () => {
+    t += 1000 / 60;
+    wall += 1000 / 60;
+    raf.flush(t);
+  };
+  frame();
+  ctl.freeze(2000, wall);
+  for (let i = 0; i < 60; i++) {
+    td.lastAt = wall; // TD heartbeat keeps arriving
+    frame();
+  }
+  assert.equal(hold.held(), true, '1 s into a 2 s lease: still frozen');
+  for (let i = 0; i < 70; i++) {
+    td.lastAt = wall;
+    frame();
+  }
+  assert.deepEqual(thaws, ['expired']);
+  assert.equal(hold.held(), false);
+});
