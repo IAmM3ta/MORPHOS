@@ -176,6 +176,9 @@ export function singleFlightUnlock(unlock: () => Promise<boolean>): () => Promis
  * but the wiring above is the fix; the guard is the seat belt.
  * `release` never starts a stopped loop, so freezeControl's "only resume
  * what I halted" rule now holds by construction as well as by bookkeeping.
+ * 2026-11-14: the recipe above is now packaged as createFreezeWiring in
+ * src/app/freezeWiring.ts, whose methods take no `now` at all (the clock is
+ * injected once), so main.ts should call that rather than re-type this.
  */
 export interface StepHold {
   /** Start holding: gate() returns 0 until release(). Idempotent. */

@@ -78,6 +78,26 @@ belt — a `now` more than the silence window behind the lease start thaws with
 `silence`, and a `lastFrameAt` ahead of `now` is ignored. Four new node tests;
 three of them fail with the guard removed. Still refused._
 
+_Progress 2026-11-14: wiring packaged. The 11-12 / 11-13 recipe (hold +
+binding + "use `Date.now()` in two places") is now one object,
+`createFreezeWiring({now, lastFrameAt, onThaw})` in
+`morphogen-v2/src/app/freezeWiring.ts`. None of its methods take a time:
+`freeze(ms)`, `frame(steps)` (tick, then gate — the frame that crosses expiry
+already runs its steps), `status(s)`, `local()`, `thaw()`, `describe()` (rule 7
+line while held) and `snapshot()` (`?debug=1`, plus `held`) all read the one
+injected clock, which `main.ts` must set to TdClient's (`Date.now`). A throwing
+or non-finite `lastFrameAt` getter counts as "no frame", so it can only end a
+hold, never wedge one. The header says to call `frame` before onFrame's
+`document.hidden` early return, so browsers that still give hidden tabs
+throttled frames keep ticking. Ten node tests in `tests/freezeWiring.test.mjs`
+(real loop, fake rAF on a page-load clock, wall clock on epoch ms), including
+a browser-side step-order guard: `main.ts` must not import the wiring while
+`parseTdCommand` refuses `freeze` — delete it in the lifting change. Stale
+`halt` / `resume` doc comments in `freezeControl.ts` (still said
+`loop.stop()` / `loop.start()`) corrected. Still refused; lifting it is now
+parser cases + `main.ts` calling this object + `send_freeze` / `send_thaw` +
+fixture move + `TD-COMMANDS.md`._
+
 ## Why `freeze` is different from `preset` and `setParams`
 
 `preset` and `setParams` are **idempotent and self-healing**: if TD vanishes

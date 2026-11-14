@@ -35,7 +35,7 @@ A reading map for someone arriving cold. Paths are relative to the repo root.
 | `src/sim/` | The CPU Gray–Scott kernel and its parameter limits. |
 | `src/render/` | Canvas 2D renderer (no WebGL; `npm run check:nowebgl` enforces it). |
 | `src/audio/` | The Hum audio engine. |
-| `src/app/` | The fixed-timestep frame loop. |
+| `src/app/` | The fixed-timestep frame loop, `createStepHold` (freeze gates kernel steps, not the loop) and `freezeWiring.ts` (the not-yet-wired single object `main.ts` will call for `freeze`, owning the lease clock). |
 | `src/ui/` | Panels, HUD, keyboard shortcuts, pointer seeding, Field feed / kill sliders. |
 | `src/sync/` | The TouchDesigner (TD) Sync client, URL checks, the TD → app command parser, `freezeLease.ts` (the not-yet-wired lease helper for a future `freeze` command) and `freezeControl.ts` (the not-yet-wired binding that halts / resumes the loop from that lease and TdClient status). |
 | `src/main.ts` | Wires all of the above together. |

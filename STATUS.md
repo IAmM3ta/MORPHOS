@@ -2,6 +2,19 @@
 
 RedBot daily cadence notes for `IAmM3ta/MORPHOS`. Newest first.
 
+## 2026-11-14 (09:15 ET — daily commit)
+
+**Landed:** the `freeze` wiring recipe packaged as one pure object, so the clock mix-up fixed yesterday can't be re-typed into `main.ts` when the refusal is lifted.
+
+- `morphogen-v2/src/app/freezeWiring.ts` (new): `createFreezeWiring({now?, lastFrameAt, onThaw?, silenceMs?})` composes `createStepHold` + `createFreezeControl` + `createFreezeLease`. Methods: `freeze(ms)`, `thaw()`, `status(s)`, `local()`, `frame(steps)`, `held()`, `describe()`, `snapshot()`, plus `control` / `hold` for debugging. **No method takes a time**: the lease clock is injected once (default `Date.now`, which must match TdClient's `opts.now`), so onFrame's rAF timestamp can't reach the lease. `frame` ticks before gating, so the frame that crosses expiry already runs its steps. A throwing / non-finite / non-number `lastFrameAt` getter counts as "no TD frame" (it can end a hold via silence, never wedge one or throw out of onFrame). `describe()` = rule-7 line while held, else null; `snapshot()` = `{until, reason, held}`. Header has the intended `main.ts` wiring and says to call `frame` before the `document.hidden` early return.
+- `morphogen-v2/tests/freezeWiring.test.mjs` (new, 10 cases): real frame loop + fake rAF on a page-load clock with an epoch wall clock — pre-open freeze ignored; lease timed on the injected clock; expiry frame not held; silence via the getter; four bad getters still thaw; describe countdown + snapshot; leaving `open` / local / refused `ms`; a thaw never restarts a stopped loop; default clock is `Date.now`; step-order guard (`main.ts` must not import the wiring while `parseTdCommand` refuses `freeze`; delete in the lifting change). Mutation check: ticking on `performance.now()` fails 3 tests, dropping the tick fails 4. `freezeWiring` added to the esbuild test bundle in `package.json`.
+- `freezeControl.ts`: `halt` / `resume` hook docs still said `loop.stop()` / `loop.start()` (pre-11-12 plan); now point at the step hold and the new wiring. `loop.ts` `createStepHold` header points at `createFreezeWiring`.
+- Docs: FREEZE-REVIEW.md progress note; docs map row for `src/app/` (MORPHOS-AND-MORPHOGEN.md); README changelog.
+- Not changed: `parseTdCommand` (still refuses `freeze` / `thaw`), `main.ts`, fixture, TD files. No runtime behaviour change.
+- Verified with `scripts/ci_local.sh all` (`PYTEST=/tmp/mv/bin/pytest`): `npm test` 194 pass (was 184); `tsc --noEmit` clean; root `pytest` 137 pass / 2 skipped (unchanged); no-WebGL check OK. Not tried in a browser or against TouchDesigner.
+
+**Next focus candidates:** lift the refusal as one reviewed change — `parseTdCommand` freeze / thaw cases, `main.ts` calling `createFreezeWiring` as in its header, `send_freeze` / `send_thaw` + `morphogen_cmds` row, fixture move, delete both step-order guards, TD-COMMANDS.md; a quick in-browser pass on `?perform=1`; STE / soft-quant work inside the codec `train_step`.
+
 ## 2026-11-13 (09:15 ET — daily commit)
 
 **Landed:** a clock correction for the `freeze` wiring plan, found by checking which clock each input to the freeze tick runs on, plus a guard in the lease so the mistake can't produce a still screen.

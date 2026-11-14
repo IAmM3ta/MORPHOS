@@ -42,9 +42,14 @@ import type { TdStatus } from './tdClient';
 import { createFreezeLease, type FreezeLease, type ThawReason } from './freezeLease';
 
 export type FreezeControlHooks = {
-  /** Stop the sim loop (main.ts: loop.stop()). Called once per freeze, not per renewal. */
+  /**
+   * Hold kernel steps. Called once per freeze, not per renewal. Wire to
+   * createStepHold().hold — NOT loop.stop(): the frame loop must keep running
+   * so tick() can notice expiry / silence (2026-11-12 correction;
+   * createFreezeWiring in src/app/freezeWiring.ts does this wiring for you).
+   */
   halt: () => void;
-  /** Restart the sim loop (main.ts: loop.start()). Only after this binding's own halt. */
+  /** Release kernel steps (createStepHold().release). Only after this binding's own halt. */
   resume: () => void;
   /** Optional: told why each lease ended, for the status line / tally. */
   onThaw?: (reason: ThawReason) => void;
